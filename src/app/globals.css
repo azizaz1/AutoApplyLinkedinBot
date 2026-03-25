@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    @apply text-slate-900 bg-[#f4f1e8];
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(circle at top left, rgba(246, 177, 122, 0.28), transparent 28%),
+      radial-gradient(circle at top right, rgba(52, 105, 89, 0.16), transparent 30%),
+      linear-gradient(180deg, #f7f2e9 0%, #f4f1e8 48%, #efe8dc 100%);
+  }
+
+  input,
+  textarea,
+  select {
+    @apply outline-none;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-emerald-600 text-white rounded-lg px-4 py-2 text-sm font-medium
+           hover:bg-emerald-700 disabled:opacity-50 transition-colors cursor-pointer;
+  }
+
+  .btn-secondary {
+    @apply border border-gray-200 rounded-lg px-4 py-2 text-sm font-medium
+           hover:bg-gray-50 disabled:opacity-50 transition-colors cursor-pointer;
+  }
+
+  .card {
+    @apply bg-white rounded-xl border border-gray-200 p-5;
+  }
+
+  .badge {
+    @apply text-xs font-medium px-2.5 py-0.5 rounded-full;
+  }
+
+  .badge-green  { @apply bg-emerald-50 text-emerald-700; }
+  .badge-amber  { @apply bg-amber-50   text-amber-700; }
+  .badge-red    { @apply bg-red-50     text-red-700; }
+  .badge-gray   { @apply bg-gray-100   text-gray-600; }
+  .badge-blue   { @apply bg-blue-50    text-blue-700; }
+}

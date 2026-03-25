@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth (NextAuth v5) ───────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  profile       Profile?
+  applications  Application[]
+  jobSearches   JobSearch[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── User Profile & CV ────────────────────────────────────────────────────────
+
+model Profile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // CV file
+  cvFileName      String?
+  cvFileUrl       String?  // stored in /public/uploads or S3
+  cvParsedAt      DateTime?
+
+  // Parsed CV data (from Claude)
+  fullName        String?
+  currentTitle    String?
+  summary         String?  @db.Text
+  yearsExperience Int?
+  skills          String[] // ["React", "Node.js", "Python", ...]
+  languages       String[] // ["Arabic", "French", "English"]
+  education       Json?    // [{degree, school, year}]
+  experience      Json?    // [{title, company, from, to, description}]
+
+  // Job preferences
+  desiredTitles   String[] // ["Software Engineer", "Full Stack Dev"]
+  desiredLocation String?
+  remoteOnly      Boolean  @default(false)
+  minSalary       Int?
+  jobCategories   String[] // ["web", "mobile", "ai", "cloud"]
+
+  // Platform credentials (encrypted in production — use a vault)
+  linkedinEmail      String?
+  linkedinPassEnc    String?
+  tanitjobsEmail     String?
+  tanitjobsPassEnc   String?
+  keejobEmail        String?
+  keejobPassEnc      String?
+
+  // Platform toggles
+  linkedinEnabled    Boolean @default(false)
+  tanitjobsEnabled   Boolean @default(false)
+  keejobEnabled      Boolean @default(false)
+
+  // Auto-apply settings
+  autoApplyEnabled   Boolean @default(false)
+  minMatchScore      Int     @default(75) // only apply to jobs ≥ this score
+  maxApplicationsDay Int     @default(20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Jobs ─────────────────────────────────────────────────────────────────────
+
+model Job {
+  id           String   @id @default(cuid())
+  platform     Platform
+  externalId   String   // job id on the platform
+  url          String
+  title        String
+  company      String
+  location     String?
+  isRemote     Boolean  @default(false)
+  description  String?  @db.Text
+  category     String?  // web | mobile | ai | cloud | fullstack
+  postedAt     DateTime?
+  scrapedAt    DateTime @default(now())
+
+  applications Application[]
+  searches     JobSearch[]   @relation("JobSearchJobs")
+
+  @@unique([platform, externalId])
+}
+
+model JobSearch {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  query     String
+  platform  Platform
+  runAt     DateTime @default(now())
+  jobsFound Int      @default(0)
+  jobs      Job[]    @relation("JobSearchJobs")
+}
+
+// ─── Applications ─────────────────────────────────────────────────────────────
+
+model Application {
+  id          String            @id @default(cuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId       String
+  job         Job               @relation(fields: [jobId], references: [id])
+
+  matchScore  Int               // 0-100 score from Claude
+  status      ApplicationStatus @default(PENDING)
+  appliedAt   DateTime?
+  respondedAt DateTime?
+  notes       String?
+
+  // Auto-apply run tracking
+  runId       String?
+  errorMsg    String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, jobId])
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Platform {
+  LINKEDIN
+  TANITJOBS
+  KEEJOB
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPLIED
+  VIEWED
+  INTERVIEW
+  REJECTED
+  OFFER
+  FAILED
+}
