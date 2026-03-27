@@ -544,10 +544,15 @@ export class LinkedInBot {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0 && (await this.isModalOpen(1500))) { await this.log("Modal already open"); return true }
 
-      // Find Easy Apply button using Playwright locator (pierces shadow DOM)
+      // Wait for Easy Apply button to appear (up to 8s on first attempt, 4s after)
       const btnLocator = this.page.locator('button:has-text("Easy Apply"), button[aria-label*="Easy Apply"]').first()
-      const btnCount = await btnLocator.count().catch(() => 0)
-      if (!btnCount) { await this.log("Easy Apply button not found", "error"); return false }
+      const waitMs = attempt === 0 ? 8000 : 4000
+      try {
+        await btnLocator.waitFor({ state: "visible", timeout: waitMs })
+      } catch {
+        await this.log("Easy Apply button not found", "error")
+        return false
+      }
 
       await this.log(`Clicking Easy Apply (attempt ${attempt + 1})`)
 
