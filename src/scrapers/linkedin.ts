@@ -33,6 +33,24 @@ const MAX_APPLIES_PER_RUN = 20
 const DELAY_BETWEEN_JOBS = 3000
 const USE_GROQ_FOR_COMPLEX_FORMS = true
 
+// LinkedIn's Easy Apply modal container selectors — ordered from most to least specific
+const MODAL_SELECTORS = [
+  ".jobs-easy-apply-modal",
+  "[data-test-modal-id='easy-apply-modal']",
+  "[aria-label*='Easy Apply' i][role='dialog']",
+  ".artdeco-modal:has(.jobs-easy-apply-content)",
+  "[role='dialog']:has(.jobs-easy-apply-form-section)",
+  "[role='dialog']:has(.jobs-easy-apply-form-element)",
+  "[role='dialog']:has(.jobs-easy-apply-content)",
+].join(", ")
+
+// Action button selectors — scoped inside the modal
+const ACTION_BTN_TEXTS = [
+  "Submit application", "Submit", "Next", "Continue to next step",
+  "Continue", "Review your application", "Review", "Send",
+  "Envoyer", "Soumettre", "Postuler", "Suivant",
+]
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface LinkedInJob {
@@ -220,7 +238,7 @@ export class LinkedInBot {
   private onLog?: LogHandler
   private shouldStop?: StopHandler
   private currentJobContext = { title: "", company: "", location: "" }
-  /** When LinkedIn opens Easy Apply as a popup, this holds that popup page */
+  /** Holds popup page if LinkedIn opened Easy Apply as a separate window */
   private modalPage: Page | null = null
   private searchTitles: string[] = DEFAULT_JOB_TITLES
   private searchLocations: string[] = [WORLDWIDE_LOCATION]
@@ -359,7 +377,6 @@ export class LinkedInBot {
     await this.page.goto("https://www.linkedin.com/login", { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {})
     await this.sleep(800)
 
-    // Accept cookie banner
     for (const btn of await this.page.$$("button:visible").catch(() => [])) {
       const text = normalizeText(await btn.evaluate((el) => (el as HTMLElement).innerText || el.getAttribute("aria-label") || "").catch(() => "")).toLowerCase()
       if (!text || text.includes("reject") || text.includes("decline")) continue
@@ -368,7 +385,6 @@ export class LinkedInBot {
 
     if (await this.isVerificationRequired()) return this.waitForVerificationResolution()
 
-    // Fill login form
     let emailInput: any = null
     for (const sel of ["input#username:visible", "input[name='session_key']:visible", "input[type='email']:visible"]) {
       emailInput = await this.page.$(sel).catch(() => null)
@@ -455,7 +471,6 @@ export class LinkedInBot {
     try { await this.page.waitForSelector(".jobs-search__results-list, .scaffold-layout__list", { timeout: 10000 }) }
     catch { await this.log("No jobs found for this search", "skipped"); return [] }
 
-    // Scroll to load more jobs
     const list = await this.page.$(".jobs-search__results-list, .scaffold-layout__list").catch(() => null)
     if (list) for (let i = 0; i < 3; i++) { await list.evaluate((el) => el.scrollBy(0, 600)).catch(() => {}); await this.sleep(800) }
 
@@ -496,14 +511,12 @@ export class LinkedInBot {
     try {
       if (!(await this.ensureVerificationCleared())) return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
 
-      // Navigate to clean standalone job URL (avoids split-view redirect issues)
       const jobUrl = `https://www.linkedin.com/jobs/view/${job.id}/`
       await this.page.goto(jobUrl, { waitUntil: "domcontentloaded", timeout: 60000 })
       await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {})
       await this.sleep(1500)
       if (!(await this.ensureVerificationCleared())) return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
 
-      // Get real job details from page
       const details = await this.page.evaluate(() => {
         const read = (sels: string[]) => { for (const s of sels) { const t = (document.querySelector(s)?.textContent || "").replace(/\s+/g, " ").trim(); if (t) return t } return "" }
         return {
@@ -517,11 +530,9 @@ export class LinkedInBot {
       this.currentJobContext = { title: resolvedJob.title, company: resolvedJob.company, location: resolvedJob.location }
       await this.log(`Applying to: ${resolvedJob.title} at ${resolvedJob.company || "Unknown company"}`)
 
-      // Skip if already applied
       const alreadyApplied = await this.page.$("[aria-label*='Applied'], button:has-text('Applied'), .jobs-s-apply__application-link").catch(() => null)
       if (alreadyApplied) { await this.log("Already applied. Skipping", "skipped"); return { ...resolvedJob, jobId: resolvedJob.id, status: "already_applied" } }
 
-      // Open Easy Apply modal
       const opened = await this.openEasyApplyModal()
       if (!opened) { await this.log("Easy Apply modal did not open. Skipping.", "skipped"); return { ...resolvedJob, jobId: resolvedJob.id, status: "skipped", reason: "No application modal" } }
 
@@ -537,65 +548,181 @@ export class LinkedInBot {
     }
   }
 
+  // ── Modal Detection (core of the bot) ─────────────────────────────────────
+
+  /** Returns the active page: popup window if LinkedIn opened one, otherwise the main page */
+  private get activePage(): Page | null { return this.modalPage ?? this.page }
+
+  /**
+   * Detects LinkedIn's Easy Apply modal using multiple strategies.
+   * Returns true as soon as any strategy succeeds within the timeout.
+   *
+   * Strategy order:
+   * 1. LinkedIn-specific CSS classes (.jobs-easy-apply-modal, data-test-modal-id, etc.)
+   * 2. [role=dialog] containing form sections
+   * 3. [role=dialog] containing any form fields (input/select/textarea)
+   * 4. Heading text fallback (apply to / postuler / etc.)
+   */
+  private async detectModal(page: Page, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+
+    // Strategy 1 — LinkedIn-specific modal selectors (most reliable)
+    try {
+      const remaining = deadline - Date.now()
+      if (remaining > 0) {
+        await page.waitForSelector(MODAL_SELECTORS, { state: "visible", timeout: Math.min(remaining, 5000) })
+        await this.log(`Modal detected (LinkedIn modal selector)`)
+        return true
+      }
+    } catch {}
+
+    // Strategy 2 — [role=dialog] with form content
+    try {
+      const remaining = deadline - Date.now()
+      if (remaining > 0) {
+        await page.locator("[role='dialog']").filter({
+          has: page.locator(".jobs-easy-apply-form-section, .jobs-easy-apply-form-element, .fb-dash-form-element"),
+        }).first().waitFor({ state: "visible", timeout: Math.min(remaining, 4000) })
+        await this.log("Modal detected (dialog with form sections)")
+        return true
+      }
+    } catch {}
+
+    // Strategy 3 — [role=dialog] containing any input/button
+    try {
+      const remaining = deadline - Date.now()
+      if (remaining > 0) {
+        await page.locator("[role='dialog']").filter({
+          has: page.locator("input:visible, select:visible, textarea:visible, button.artdeco-button--primary"),
+        }).first().waitFor({ state: "visible", timeout: Math.min(remaining, 4000) })
+        await this.log("Modal detected (dialog with inputs)")
+        return true
+      }
+    } catch {}
+
+    // Strategy 4 — Heading text (works for older LinkedIn layout)
+    try {
+      const remaining = deadline - Date.now()
+      if (remaining > 0) {
+        await page.locator("h2, h3, h4").filter({
+          hasText: /apply to|apply for|postuler|candidature|easy apply|your application|submit your/i,
+        }).first().waitFor({ state: "visible", timeout: Math.min(remaining, 3000) })
+        await this.log("Modal detected (heading text)")
+        return true
+      }
+    } catch {}
+
+    // Dump visible buttons to help diagnose when all strategies fail
+    const btns = await page.locator("button:visible").allTextContents().catch(() => [] as string[])
+    await this.log(`Modal not detected. Visible buttons: ${btns.filter(Boolean).slice(0, 12).join(" | ")}`, "error")
+    return false
+  }
+
+  /**
+   * Opens the Easy Apply modal. Handles 3 cases LinkedIn uses:
+   * 1. Overlay modal on the same page (most common)
+   * 2. Popup window (new tab opened by LinkedIn)
+   * 3. Navigation to /jobs/easy-apply/{id}/ URL in the same tab
+   */
   private async openEasyApplyModal(): Promise<boolean> {
     if (!this.page) return false
     this.modalPage = null
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0 && (await this.isModalOpen(1500))) { await this.log("Modal already open"); return true }
+    // ── Find the Easy Apply button ──────────────────────────────────────────
+    const BTN_SELECTOR = [
+      "button[data-control-name='jobdetails_topcard_inapply']",
+      "button.jobs-apply-button--top-card",
+      "button.jobs-s-apply__button.artdeco-button--primary",
+      "button:has-text('Easy Apply')",
+      "button[aria-label*='Easy Apply' i]",
+      ".jobs-s-apply button",
+    ].join(", ")
 
-      // Wait for Easy Apply button to appear (up to 8s on first attempt, 4s after)
-      const btnLocator = this.page.locator('button:has-text("Easy Apply"), button[aria-label*="Easy Apply"]').first()
-      const waitMs = attempt === 0 ? 8000 : 4000
-      try {
-        await btnLocator.waitFor({ state: "visible", timeout: waitMs })
-      } catch {
-        await this.log("Easy Apply button not found", "error")
+    try {
+      await this.page.waitForSelector(BTN_SELECTOR, { state: "visible", timeout: 10000 })
+    } catch {
+      // Try JS fallback — evaluates against the full DOM regardless of Playwright's visibility check
+      const found = await this.page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button"))
+        return btns.some(b =>
+          b.textContent?.toLowerCase().includes("easy apply") ||
+          b.getAttribute("aria-label")?.toLowerCase().includes("easy apply")
+        )
+      }).catch(() => false)
+
+      if (!found) {
+        const visibleBtns = await this.page.locator("button:visible").allTextContents().catch(() => [] as string[])
+        await this.log(`Easy Apply button not found. Page buttons: ${visibleBtns.filter(Boolean).slice(0, 12).join(" | ")}`, "error")
         return false
       }
-
-      await this.log(`Clicking Easy Apply (attempt ${attempt + 1})`)
-
-      // Listen for popup BEFORE clicking — LinkedIn sometimes opens Easy Apply as a popup window
-      const popupPromise = this.page.waitForEvent("popup", { timeout: 4000 }).catch(() => null)
-      await btnLocator.click({ force: true }).catch(async () => {
-        // Fallback: mouse click at button center
-        const box = await btnLocator.boundingBox().catch(() => null)
-        if (box) await this.page!.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-      })
-
-      // Check if a popup opened (Easy Apply in popup window)
-      const popup = await popupPromise
-      if (popup) {
-        await this.log("Easy Apply opened as popup — switching to popup")
-        await popup.waitForLoadState("domcontentloaded").catch(() => {})
-        this.modalPage = popup
-        if (await this.isModalOpen(5000)) return true
-        this.modalPage = null
-      }
-
-      // Otherwise check for overlay modal on main page
-      if (await this.isModalOpen(8000 + attempt * 2000)) return true
-      await this.log(`Modal did not appear on attempt ${attempt + 1}. Retrying...`, "status")
     }
+
+    await this.log("Easy Apply button found — clicking...")
+
+    // ── Listen for popup BEFORE clicking ───────────────────────────────────
+    // LinkedIn sometimes opens Easy Apply as a new window (popup)
+    const popupPromise = this.page.waitForEvent("popup", { timeout: 5000 }).catch(() => null)
+
+    // Click the button
+    const btn = this.page.locator(BTN_SELECTOR).first()
+    await btn.click({ force: true }).catch(async () => {
+      // JS click fallback if Playwright click fails
+      await this.page!.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button"))
+        const easyApply = btns.find(b =>
+          b.textContent?.toLowerCase().includes("easy apply") ||
+          b.getAttribute("aria-label")?.toLowerCase().includes("easy apply")
+        )
+        if (easyApply) (easyApply as HTMLElement).click()
+      }).catch(() => {})
+    })
+
+    // ── Case 1: Popup window ────────────────────────────────────────────────
+    const popup = await popupPromise
+    if (popup) {
+      await this.log("Easy Apply opened as popup window — switching context")
+      await popup.waitForLoadState("domcontentloaded").catch(() => {})
+      await this.sleep(1200)
+      this.modalPage = popup
+      if (await this.detectModal(popup, 8000)) return true
+      // Popup didn't contain the modal — fall through to main page check
+      this.modalPage = null
+      await this.log("Popup did not contain modal — checking main page...")
+    }
+
+    // ── Brief wait for LinkedIn to render the modal ─────────────────────────
+    await this.sleep(1000)
+
+    // ── Case 2: LinkedIn navigated to /jobs/easy-apply/ in the same tab ────
+    const currentUrl = this.page.url()
+    if (currentUrl.includes("/jobs/easy-apply/") || currentUrl.includes("easy-apply")) {
+      await this.log(`Navigated to Easy Apply URL: ${currentUrl}`)
+      await this.page.waitForLoadState("domcontentloaded").catch(() => {})
+      await this.sleep(800)
+      if (await this.detectModal(this.page, 6000)) return true
+    }
+
+    // ── Case 3: Overlay modal on the same page (most common) ───────────────
+    if (await this.detectModal(this.page, 8000)) return true
+
     return false
   }
 
-  /** Returns the active page context: popup if Easy Apply opened as popup, otherwise main page */
-  private get activePage(): Page | null { return this.modalPage ?? this.page }
+  /** Returns the locator for the modal container on the active page */
+  private getModalContainer() {
+    const p = this.activePage
+    if (!p) return null
+    return p.locator(MODAL_SELECTORS + ", [role='dialog']").first()
+  }
 
-  /** Detects the Easy Apply modal by looking for the "Apply to [Company]" heading */
+  /** Returns true if the Easy Apply modal is currently visible */
   private async isModalOpen(timeoutMs = 2000): Promise<boolean> {
     const p = this.activePage
     if (!p) return false
-    try {
-      await p.locator("h1, h2, h3, h4, [role='heading']")
-        .filter({ hasText: /apply to|postuler (à|a)|candidature/i })
-        .first()
-        .waitFor({ state: "visible", timeout: timeoutMs })
-      return true
-    } catch { return false }
+    return this.detectModal(p, timeoutMs)
   }
+
+  // ── Application Flow ───────────────────────────────────────────────────────
 
   private async handleApplicationFlow(): Promise<ApplicationFlowResult> {
     if (!this.page) return { status: "skipped", reason: "No page" }
@@ -605,46 +732,59 @@ export class LinkedInBot {
         if (!(await this.ensureVerificationCleared())) return { status: "skipped", reason: "Verification required" }
         if (await this.isStopRequested()) { await this.dismissModal(); return { status: "skipped", reason: "Stopped manually" } }
 
-        // Check modal still open
+        // Check modal is still visible
         if (!(await this.isModalOpen(3000))) {
-          if (await this.wasSubmitted()) return { status: "applied", reason: "Submitted" }
-          return { status: "skipped", reason: step === 0 ? "Modal disappeared" : "Modal closed before submit" }
+          if (await this.wasSubmitted()) return { status: "applied" }
+          return { status: "skipped", reason: step === 0 ? "Modal closed immediately" : "Modal closed before submit" }
         }
 
-        // Log step info
-        const heading = await this.activePage!.locator("h1, h2, h3, h4, [role='heading']").filter({ hasText: /apply to|postuler (à|a)|candidature/i }).first().textContent().catch(() => "")
-        await this.log(`Step ${step}${heading ? ` - ${heading.trim()}` : ""}`)
+        // Log step heading
+        const p = this.activePage!
+        const heading = await p.locator("[role='dialog'] h2, [role='dialog'] h3, .jobs-easy-apply-modal h2, .jobs-easy-apply-modal h3")
+          .first().textContent().catch(() => "")
+        await this.log(`Step ${step}${heading ? ` — ${heading.trim()}` : ""}`)
 
-        // Fill form fields — wait a bit first for the modal content to fully render
-        await this.sleep(1200)
+        // Wait for modal content to fully render, then fill fields
+        await this.sleep(1000)
         await this.fillStep()
-        await this.sleep(500)
+        await this.sleep(400)
 
         // Click Next / Submit
         const clicked = await this.clickNextButton()
-        if (!clicked) return { status: "skipped", reason: "Could not find Next button" }
+        if (!clicked) {
+          // Last-ditch: try pressing Enter
+          await p.keyboard.press("Enter").catch(() => {})
+          await this.sleep(1000)
+          if (await this.wasSubmitted()) return { status: "applied" }
+          return { status: "skipped", reason: "Could not find Next/Submit button" }
+        }
 
-        await this.sleep(1800)
+        // Wait for LinkedIn to process the click
+        await this.sleep(2000)
 
         // Check if submitted
         if (await this.wasSubmitted()) {
+          await this.log("Application submitted!")
+          // Dismiss the success dialog
           const ap = this.activePage
-          const done = await ap?.$("button[aria-label='Dismiss'], button:has-text('Done'), button:has-text('OK')").catch(() => null)
-          if (done) await this.safeClick(done)
+          const doneLocator = ap?.locator("button[aria-label='Dismiss'], button:has-text('Done'), button:has-text('OK')").first()
+          if (doneLocator && await doneLocator.count().catch(() => 0) > 0) await doneLocator.click({ force: true }).catch(() => {})
           if (this.modalPage) { await this.modalPage.close().catch(() => {}); this.modalPage = null }
-          await this.log("Application submitted")
-          return { status: "applied", reason: "Submitted" }
+          return { status: "applied" }
         }
 
-        // Log inline errors but keep going
+        // Log any inline form errors (but keep going)
         const err = await this.getInlineError()
-        if (err) await this.log(`Form error: ${err}`, "error")
+        if (err) await this.log(`Form validation error: ${err}`, "error")
 
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        if (msg.includes("Execution context was destroyed") || msg.includes("navigation")) { await this.sleep(1500); continue }
-        await this.log(`Step error: ${msg}`, "error")
-        await this.sleep(1000)
+        if (msg.includes("Execution context was destroyed") || msg.includes("navigation") || msg.includes("Target closed")) {
+          await this.sleep(1500)
+          continue
+        }
+        await this.log(`Step ${step} error: ${msg}`, "error")
+        await this.sleep(800)
       }
     }
 
@@ -652,60 +792,82 @@ export class LinkedInBot {
   }
 
   /**
-   * Clicks the Next / Continue / Submit button in the Easy Apply modal.
+   * Clicks the Next / Continue / Submit button inside the modal.
    *
-   * Strategy order:
-   *  1. LinkedIn's primary button class (most reliable)
-   *  2. getByRole with partial text match — no ^ $ anchors so "Continue to next step" matches
-   *  3. Any visible button whose text contains an action keyword
+   * Scoping strategy:
+   * 1. Find the modal container first
+   * 2. Click artdeco-button--primary INSIDE the modal (not page-wide)
+   * 3. Fallback: text-based search inside modal
+   * 4. Last resort: page-wide primary button
    */
   private async clickNextButton(): Promise<boolean> {
     const p = this.activePage
     if (!p) return false
 
-    // All strategies use activePage (popup or main page) with Playwright locators
-    // which pierce shadow DOM — unlike page.$$() / page.evaluate()
+    // ── Step 1: Find the modal container ───────────────────────────────────
+    const modalLocator = p.locator(MODAL_SELECTORS + ", [role='dialog']").first()
+    const modalCount = await modalLocator.count().catch(() => 0)
 
-    // 1. Wait up to 6s for primary button (modal renders heading first, buttons slightly after)
-    const primaryLocator = p.locator("button.artdeco-button--primary").last()
-    try {
-      await primaryLocator.waitFor({ state: "visible", timeout: 6000 })
-      const label = await primaryLocator.textContent().catch(() => "")
-      await this.log(`Clicking: ${label?.trim() || "primary button"}`)
-      await primaryLocator.click({ force: true })
-      return true
-    } catch { /* not found, try other strategies */ }
-
-    // 2. :has-text() matches partial visible text, pierces shadow DOM
-    const actionTexts = [
-      "Submit application", "Submit", "Next", "Continue to next step", "Continue",
-      "Review your application", "Review", "Send", "Envoyer", "Soumettre", "Postuler",
-    ]
-    for (const text of actionTexts) {
-      const loc = p.locator(`button:has-text("${text}")`).last()
-      const count = await loc.count().catch(() => 0)
-      if (count > 0) {
-        await this.log(`Clicking: ${text}`)
-        await loc.click({ force: true }).catch(() => {})
+    if (modalCount > 0) {
+      // Primary button inside modal — wait up to 5s for it to be enabled
+      const primaryBtn = modalLocator.locator("button.artdeco-button--primary").last()
+      try {
+        await primaryBtn.waitFor({ state: "visible", timeout: 5000 })
+        const label = await primaryBtn.textContent().catch(() => "")
+        await this.log(`Clicking: "${label?.trim() || "primary button"}"`)
+        await primaryBtn.click({ force: true })
         return true
+      } catch { /* not found */ }
+
+      // Text-based search inside modal
+      for (const text of ACTION_BTN_TEXTS) {
+        const btn = modalLocator.locator(`button:has-text("${text}")`).last()
+        if (await btn.count().catch(() => 0) > 0) {
+          await this.log(`Clicking: "${text}"`)
+          await btn.click({ force: true }).catch(() => {})
+          return true
+        }
+      }
+
+      // getByRole inside modal
+      const byRole = modalLocator.getByRole("button", { name: /next|submit|continue|review|send|postuler|suivant|envoyer|soumettre/i })
+      if (await byRole.count().catch(() => 0) > 0) {
+        const label = await byRole.last().textContent().catch(() => "")
+        await this.log(`Clicking (role): "${label?.trim()}"`)
+        await byRole.last().click({ force: true }).catch(() => {})
+        return true
+      }
+
+      // Debug: what buttons ARE in the modal?
+      const modalBtns = await modalLocator.locator("button").allTextContents().catch(() => [] as string[])
+      await this.log(`No action button found inside modal. Modal buttons: ${modalBtns.filter(Boolean).join(" | ")}`, "error")
+
+      // If "Next" button literally isn't there but there are other buttons, try clicking the last visible one
+      const visibleBtns = await modalLocator.locator("button:visible").all().catch(() => [])
+      // Skip dismiss/close/back buttons
+      for (let i = visibleBtns.length - 1; i >= 0; i--) {
+        const txt = normalizeText(await visibleBtns[i].textContent().catch(() => "")).toLowerCase()
+        if (txt && !txt.includes("dismiss") && !txt.includes("close") && !txt.includes("back") && !txt.includes("cancel") && !txt.includes("discard")) {
+          await this.log(`Clicking last visible modal button: "${txt}"`)
+          await visibleBtns[i].click({ force: true }).catch(() => {})
+          return true
+        }
       }
     }
 
-    // 3. getByRole partial pattern
-    const actionPattern = /next|suivant|continue|continuer|review|submit|send|envoyer|soumettre|postuler/i
-    const byRole = p.getByRole("button", { name: actionPattern })
-    const roleCount = await byRole.count().catch(() => 0)
-    if (roleCount > 0) {
-      const btn = byRole.last()
-      const label = await btn.textContent().catch(() => "")
-      await this.log(`Clicking (role): ${label?.trim() || "action button"}`)
-      await btn.click({ force: true }).catch(() => {})
+    // ── Step 2: Page-wide fallback ─────────────────────────────────────────
+    await this.log("Modal container not found — falling back to page-wide button search")
+
+    const primaryPageBtn = p.locator("button.artdeco-button--primary:visible").last()
+    if (await primaryPageBtn.count().catch(() => 0) > 0) {
+      const label = await primaryPageBtn.textContent().catch(() => "")
+      await this.log(`Clicking page-wide: "${label?.trim()}"`)
+      await primaryPageBtn.click({ force: true }).catch(() => {})
       return true
     }
 
-    // Diagnostic
-    const allVisible = await p.locator("button").allTextContents().catch(() => [] as string[])
-    await this.log(`No Next button. Buttons on ${this.modalPage ? "popup" : "main"} page: ${allVisible.filter(Boolean).slice(0, 15).join(" | ")}`, "error")
+    const allBtns = await p.locator("button:visible").allTextContents().catch(() => [] as string[])
+    await this.log(`No button found anywhere. All visible buttons: ${allBtns.filter(Boolean).slice(0, 15).join(" | ")}`, "error")
     return false
   }
 
@@ -817,7 +979,7 @@ export class LinkedInBot {
         if (isTextarea && /cover letter|motivation|why are you|why do you want/i.test(label)) {
           const letter = await this.generateCoverLetter()
           await input.fill(letter).catch(() => {})
-          await this.log(`Filled cover letter`)
+          await this.log("Filled cover letter")
           await this.fireReactEvents(input); await this.sleep(250); continue
         }
 
@@ -828,7 +990,6 @@ export class LinkedInBot {
           await this.fireReactEvents(input); await this.sleep(250); continue
         }
 
-        // Groq fallback
         if (USE_GROQ_FOR_COMPLEX_FORMS && this.applicantProfile) {
           const decision = await askGroqForFieldAnswer({ question: label, fieldType: "text", applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
           if (decision?.answer && !decision.shouldPause && decision.confidence >= 60) {
@@ -885,7 +1046,7 @@ export class LinkedInBot {
         const matched = options.find((o) => guessed && (o.text.includes(guessed) || o.value.toLowerCase() === guessed))
         if (matched?.value) { await select.selectOption(matched.value).catch(() => {}); await this.log(`Selected ${this.describeFieldLabel(label)}: ${matched.text}`); continue }
 
-        if (this.isProfileDrivenQuestion(label) && USE_GROQ_FOR_COMPLEX_FORMS && this.applicantProfile) {
+        if (USE_GROQ_FOR_COMPLEX_FORMS && this.applicantProfile) {
           const decision = await askGroqForFieldAnswer({ question: label, fieldType: "select", options: options.map((o) => o.text), applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
           const groqMatch = decision?.answer ? options.find((o) => o.text.includes(decision.answer.toLowerCase())) : null
           if (groqMatch?.value) { await select.selectOption(groqMatch.value).catch(() => {}); await this.log(`Groq selected: ${decision?.answer}`); continue }
@@ -1073,7 +1234,14 @@ export class LinkedInBot {
     const p = this.activePage
     if (!p) return false
     const body = await p.evaluate(() => document.body?.innerText?.replace(/\s+/g, " ").trim().toLowerCase() || "").catch(() => "")
-    if (body.includes("application submitted") || body.includes("your application was sent") || body.includes("application sent") || body.includes("candidature envoy")) return true
+    if (
+      body.includes("application submitted") ||
+      body.includes("your application was sent") ||
+      body.includes("application sent") ||
+      body.includes("candidature envoy") ||
+      body.includes("you've applied") ||
+      body.includes("applied to")
+    ) return true
     return Boolean(await p.$("[aria-label*='Applied'], button:has-text('Applied'), .jobs-s-apply__application-link").catch(() => null))
   }
 
