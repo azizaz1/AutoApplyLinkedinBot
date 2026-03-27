@@ -485,6 +485,12 @@ export default function DashboardPage() {
                   >
                     View all
                   </a>
+                  <a
+                    href="/statistics"
+                    className="rounded-full border border-[#ddd2c2] bg-white px-3 py-1 text-xs font-medium text-[#5a6a8a] transition-colors hover:bg-[#f6efe5]"
+                  >
+                    Statistics
+                  </a>
                 </div>
               </div>
 
