@@ -220,6 +220,8 @@ export class LinkedInBot {
   private onLog?: LogHandler
   private shouldStop?: StopHandler
   private currentJobContext = { title: "", company: "", location: "" }
+  /** When LinkedIn opens Easy Apply as a popup, this holds that popup page */
+  private modalPage: Page | null = null
   private searchTitles: string[] = DEFAULT_JOB_TITLES
   private searchLocations: string[] = [WORLDWIDE_LOCATION]
   private results: ApplyResult[] = []
@@ -535,84 +537,54 @@ export class LinkedInBot {
     }
   }
 
-  private async findEasyApplyButton() {
-    if (!this.page) return null
-
-    // Strategy 1: Playwright :has-text() — matches button text directly, no aria-label needed
-    const byText = await this.page.waitForSelector("button:has-text('Easy Apply')", { state: "visible", timeout: 8000 }).catch(() => null)
-    if (byText) return byText
-
-    // Strategy 2: aria-label fallback
-    const byAriaLabel = await this.page.$("button[aria-label*='Easy Apply']").catch(() => null)
-    if (byAriaLabel) return byAriaLabel
-
-    // Strategy 3: known LinkedIn CSS classes
-    for (const sel of ["button.jobs-apply-button", ".jobs-s-apply button", ".jobs-apply-button--top-card button"]) {
-      const el = await this.page.$(sel).catch(() => null)
-      if (el) return el
-    }
-
-    // Strategy 4: JS DOM search — finds Easy Apply in any element/role, returns a handle via index
-    const jsResult = await this.page.evaluate(() => {
-      const all = Array.from(document.querySelectorAll('button, [role="button"], a'))
-      const match = all.find(el => {
-        const text = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").toLowerCase()
-        return text.includes("easy apply")
-      })
-      if (!match) {
-        // Log what elements exist for debugging
-        const btns = all.map(el => ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim()).filter(Boolean)
-        return { found: false, debug: btns.slice(0, 15).join(" | ") }
-      }
-      const h = match as HTMLElement
-      h.click()
-      return { found: true, debug: (h.innerText || match.getAttribute("aria-label") || "").trim() }
-    }).catch(() => ({ found: false, debug: "evaluate failed" }))
-
-    if (jsResult.found) {
-      await this.log(`JS-clicked Easy Apply: ${jsResult.debug}`)
-      return "js-clicked" as unknown as Awaited<ReturnType<typeof this.page.$>>
-    }
-
-    await this.log(`No Easy Apply button. Elements: ${jsResult.debug}`, "error")
-    return null
-  }
-
   private async openEasyApplyModal(): Promise<boolean> {
+    if (!this.page) return false
+    this.modalPage = null
+
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0 && (await this.isModalOpen(1500))) { await this.log("Modal already open"); return true }
 
-      // Find Easy Apply button
-      const btn = await this.findEasyApplyButton()
-      if (!btn) { await this.log("Easy Apply button not found", "error"); return false }
+      // Find Easy Apply button using Playwright locator (pierces shadow DOM)
+      const btnLocator = this.page.locator('button:has-text("Easy Apply"), button[aria-label*="Easy Apply"]').first()
+      const btnCount = await btnLocator.count().catch(() => 0)
+      if (!btnCount) { await this.log("Easy Apply button not found", "error"); return false }
 
-      // If JS already clicked it (sentinel value), skip the Playwright click
-      const jsAlreadyClicked = (btn as unknown as string) === "js-clicked"
-      if (!jsAlreadyClicked) {
-        const label = await btn.evaluate((el) => ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").trim()).catch(() => "?")
-        await this.log(`Clicking Easy Apply button: "${label}" (attempt ${attempt + 1})`)
-        try {
-          const box = await btn.boundingBox()
-          if (box && this.page) {
-            const x = box.x + box.width / 2, y = box.y + box.height / 2
-            await this.page.mouse.move(x - 10, y - 5); await this.sleep(100)
-            await this.page.mouse.move(x, y); await this.sleep(80)
-            await this.page.mouse.click(x, y)
-          } else await this.safeClick(btn)
-        } catch { await this.safeClick(btn) }
+      await this.log(`Clicking Easy Apply (attempt ${attempt + 1})`)
+
+      // Listen for popup BEFORE clicking — LinkedIn sometimes opens Easy Apply as a popup window
+      const popupPromise = this.page.waitForEvent("popup", { timeout: 4000 }).catch(() => null)
+      await btnLocator.click({ force: true }).catch(async () => {
+        // Fallback: mouse click at button center
+        const box = await btnLocator.boundingBox().catch(() => null)
+        if (box) await this.page!.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+      })
+
+      // Check if a popup opened (Easy Apply in popup window)
+      const popup = await popupPromise
+      if (popup) {
+        await this.log("Easy Apply opened as popup — switching to popup")
+        await popup.waitForLoadState("domcontentloaded").catch(() => {})
+        this.modalPage = popup
+        if (await this.isModalOpen(5000)) return true
+        this.modalPage = null
       }
 
+      // Otherwise check for overlay modal on main page
       if (await this.isModalOpen(8000 + attempt * 2000)) return true
       await this.log(`Modal did not appear on attempt ${attempt + 1}. Retrying...`, "status")
     }
     return false
   }
 
+  /** Returns the active page context: popup if Easy Apply opened as popup, otherwise main page */
+  private get activePage(): Page | null { return this.modalPage ?? this.page }
+
   /** Detects the Easy Apply modal by looking for the "Apply to [Company]" heading */
   private async isModalOpen(timeoutMs = 2000): Promise<boolean> {
-    if (!this.page) return false
+    const p = this.activePage
+    if (!p) return false
     try {
-      await this.page.locator("h1, h2, h3, h4, [role='heading']")
+      await p.locator("h1, h2, h3, h4, [role='heading']")
         .filter({ hasText: /apply to|postuler (à|a)|candidature/i })
         .first()
         .waitFor({ state: "visible", timeout: timeoutMs })
@@ -635,7 +607,7 @@ export class LinkedInBot {
         }
 
         // Log step info
-        const heading = await this.page.locator("h1, h2, h3, h4, [role='heading']").filter({ hasText: /apply to|postuler (à|a)|candidature/i }).first().textContent().catch(() => "")
+        const heading = await this.activePage!.locator("h1, h2, h3, h4, [role='heading']").filter({ hasText: /apply to|postuler (à|a)|candidature/i }).first().textContent().catch(() => "")
         await this.log(`Step ${step}${heading ? ` - ${heading.trim()}` : ""}`)
 
         // Fill form fields — wait a bit first for the modal content to fully render
@@ -651,8 +623,10 @@ export class LinkedInBot {
 
         // Check if submitted
         if (await this.wasSubmitted()) {
-          const done = await this.page.$("button[aria-label='Dismiss'], button:has-text('Done'), button:has-text('OK')").catch(() => null)
+          const ap = this.activePage
+          const done = await ap?.$("button[aria-label='Dismiss'], button:has-text('Done'), button:has-text('OK')").catch(() => null)
           if (done) await this.safeClick(done)
+          if (this.modalPage) { await this.modalPage.close().catch(() => {}); this.modalPage = null }
           await this.log("Application submitted")
           return { status: "applied", reason: "Submitted" }
         }
@@ -681,28 +655,29 @@ export class LinkedInBot {
    *  3. Any visible button whose text contains an action keyword
    */
   private async clickNextButton(): Promise<boolean> {
-    if (!this.page) return false
+    const p = this.activePage
+    if (!p) return false
 
-    // LinkedIn's Easy Apply modal uses shadow DOM (artdeco web components).
-    // page.locator() and :has-text() PIERCE shadow DOM — page.$$() and evaluate() do NOT.
+    // All strategies use activePage (popup or main page) with Playwright locators
+    // which pierce shadow DOM — unlike page.$$() / page.evaluate()
 
-    // 1. Wait up to 6s for any primary button to appear (modal renders heading first, content second)
-    const primaryLocator = this.page.locator("button.artdeco-button--primary").last()
+    // 1. Wait up to 6s for primary button (modal renders heading first, buttons slightly after)
+    const primaryLocator = p.locator("button.artdeco-button--primary").last()
     try {
       await primaryLocator.waitFor({ state: "visible", timeout: 6000 })
       const label = await primaryLocator.textContent().catch(() => "")
       await this.log(`Clicking: ${label?.trim() || "primary button"}`)
       await primaryLocator.click({ force: true })
       return true
-    } catch { /* not found yet, try other strategies */ }
+    } catch { /* not found, try other strategies */ }
 
-    // 2. Playwright :has-text() — pierces shadow DOM, matches partial button text
+    // 2. :has-text() matches partial visible text, pierces shadow DOM
     const actionTexts = [
       "Submit application", "Submit", "Next", "Continue to next step", "Continue",
       "Review your application", "Review", "Send", "Envoyer", "Soumettre", "Postuler",
     ]
     for (const text of actionTexts) {
-      const loc = this.page.locator(`button:has-text("${text}")`).last()
+      const loc = p.locator(`button:has-text("${text}")`).last()
       const count = await loc.count().catch(() => 0)
       if (count > 0) {
         await this.log(`Clicking: ${text}`)
@@ -711,9 +686,9 @@ export class LinkedInBot {
       }
     }
 
-    // 3. getByRole with partial pattern (also pierces shadow DOM)
+    // 3. getByRole partial pattern
     const actionPattern = /next|suivant|continue|continuer|review|submit|send|envoyer|soumettre|postuler/i
-    const byRole = this.page.getByRole("button", { name: actionPattern })
+    const byRole = p.getByRole("button", { name: actionPattern })
     const roleCount = await byRole.count().catch(() => 0)
     if (roleCount > 0) {
       const btn = byRole.last()
@@ -723,9 +698,9 @@ export class LinkedInBot {
       return true
     }
 
-    // Diagnostic: show what Playwright CAN see (pierces shadow DOM)
-    const allVisible = await this.page.locator("button").allTextContents().catch(() => [] as string[])
-    await this.log(`No Next button. Visible buttons: ${allVisible.filter(Boolean).slice(0, 15).join(" | ")}`, "error")
+    // Diagnostic
+    const allVisible = await p.locator("button").allTextContents().catch(() => [] as string[])
+    await this.log(`No Next button. Buttons on ${this.modalPage ? "popup" : "main"} page: ${allVisible.filter(Boolean).slice(0, 15).join(" | ")}`, "error")
     return false
   }
 
@@ -819,8 +794,9 @@ export class LinkedInBot {
   }
 
   private async fillTextInputs() {
-    if (!this.page) return
-    const inputs = await this.page.$$("input[type='text']:visible, input[type='tel']:visible, input[type='number']:visible, input[type='email']:visible, textarea:visible").catch(() => [])
+    const p = this.activePage
+    if (!p) return
+    const inputs = await p.$$("input[type='text']:visible, input[type='tel']:visible, input[type='number']:visible, input[type='email']:visible, textarea:visible").catch(() => [])
     for (const input of inputs) {
       try {
         if (!(await this.isInteractableField(input))) continue
@@ -864,7 +840,8 @@ export class LinkedInBot {
     const country = this.answers.baseCountry || this.answers.country
     if (currentValue.toLowerCase().includes(city.toLowerCase())) {
       await input.click({ force: true }).catch(() => {})
-      if (this.page) await this.page.keyboard.press("Tab").catch(() => {})
+      const ap = this.activePage
+      if (ap) await ap.keyboard.press("Tab").catch(() => {})
       return
     }
     for (const term of [`${city}, ${country}`, city]) {
@@ -872,8 +849,9 @@ export class LinkedInBot {
       await input.fill(term).catch(() => {})
       await this.log(`Typing location search: ${term}`)
       await this.sleep(1100)
-      if (this.page) {
-        const candidates = await this.page.$$("[role='option'], .basic-typeahead__selectable, .artdeco-typeahead__result, [data-test-autocomplete-dropdown] li").catch(() => [])
+      const ap = this.activePage
+      if (ap) {
+        const candidates = await ap.$$("[role='option'], .basic-typeahead__selectable, .artdeco-typeahead__result, [data-test-autocomplete-dropdown] li").catch(() => [])
         for (const c of candidates) {
           const text = normalizeText(await c.textContent().catch(() => "")).toLowerCase()
           if (text && (text.includes(term.toLowerCase()) || text.includes(city.toLowerCase()))) {
@@ -887,8 +865,9 @@ export class LinkedInBot {
   }
 
   private async answerSelects() {
-    if (!this.page) return
-    const selects = await this.page.$$("select:visible").catch(() => [])
+    const p = this.activePage
+    if (!p) return
+    const selects = await p.$$("select:visible").catch(() => [])
     for (const select of selects) {
       try {
         if (!(await this.isInteractableField(select))) continue
@@ -916,8 +895,9 @@ export class LinkedInBot {
   }
 
   private async answerRadioButtons() {
-    if (!this.page) return
-    const radios = await this.page.$$("input[type='radio']:visible").catch(() => [])
+    const p = this.activePage
+    if (!p) return
+    const radios = await p.$$("input[type='radio']:visible").catch(() => [])
     const processed = new Set<string>()
     for (const radio of radios) {
       try {
@@ -927,7 +907,7 @@ export class LinkedInBot {
         if (!key || processed.has(key)) continue
         processed.add(key)
 
-        const checked = name ? await this.page.$(`input[type='radio'][name="${name}"]:checked`).catch(() => null) : await this.page.$(`#${id}:checked`).catch(() => null)
+        const checked = name ? await p.$(`input[type='radio'][name="${name}"]:checked`).catch(() => null) : await p.$(`#${id}:checked`).catch(() => null)
         if (checked) continue
 
         const container = await radio.evaluateHandle((el) => el.closest("fieldset, [role='radiogroup'], [data-test-form-element], .jobs-easy-apply-form-section__grouping, .fb-dash-form-element") || el.parentElement).catch(() => null)
@@ -942,12 +922,12 @@ export class LinkedInBot {
           : text.includes("worked before") ? this.answers.workedBefore
           : "yes"
 
-        const groupRadios = name ? await this.page!.$$(`input[type='radio'][name="${name}"]`).catch(() => []) : group ? await group.$$("input[type='radio']").catch(() => []) : [radio]
+        const groupRadios = name ? await p.$$(`input[type='radio'][name="${name}"]`).catch(() => []) : group ? await group.$$("input[type='radio']").catch(() => []) : [radio]
         let selected = false
         for (const option of groupRadios) {
           const value = normalizeText(await option.getAttribute("value").catch(() => "")).toLowerCase()
           const optionId = await option.getAttribute("id")
-          const labelEl = optionId ? await this.page!.$(`label[for="${optionId}"]`).catch(() => null) : null
+          const labelEl = optionId ? await p.$(`label[for="${optionId}"]`).catch(() => null) : null
           const labelText = normalizeText(await labelEl?.textContent().catch(() => "")).toLowerCase()
           if (value === desired || labelText === desired || labelText.includes(` ${desired}`) || labelText.startsWith(`${desired} `)) {
             await option.check().catch(() => {}); selected = true; break
@@ -960,8 +940,9 @@ export class LinkedInBot {
   }
 
   private async answerCheckboxes() {
-    if (!this.page) return
-    const checkboxes = await this.page.$$("input[type='checkbox']:visible").catch(() => [])
+    const p = this.activePage
+    if (!p) return
+    const checkboxes = await p.$$("input[type='checkbox']:visible").catch(() => [])
     for (const checkbox of checkboxes) {
       try {
         if (!(await this.isInteractableField(checkbox))) continue
@@ -978,8 +959,9 @@ export class LinkedInBot {
   }
 
   private async answerComboboxes() {
-    if (!this.page) return
-    const comboboxes = await this.page.$$("[role='combobox']:visible, button[aria-haspopup='listbox']:visible, input[role='combobox']:visible").catch(() => [])
+    const p = this.activePage
+    if (!p) return
+    const comboboxes = await p.$$("[role='combobox']:visible, button[aria-haspopup='listbox']:visible, input[role='combobox']:visible").catch(() => [])
     for (const combobox of comboboxes) {
       try {
         if (!(await this.isInteractableField(combobox))) continue
@@ -989,7 +971,7 @@ export class LinkedInBot {
 
         if (currentValue && !looksLikePlaceholderValue(currentValue)) {
           await combobox.click({ force: true }).catch(() => {})
-          if (this.page) await this.page.keyboard.press("Escape").catch(() => {})
+          await p.keyboard.press("Escape").catch(() => {})
           continue
         }
         if (l.includes("phone country code") || l.includes("country code")) {
@@ -1012,15 +994,16 @@ export class LinkedInBot {
   }
 
   private async selectComboboxOption(combobox: any, desiredOptions: string[]) {
-    if (!this.page) return null
+    const p = this.activePage
+    if (!p) return null
     for (const desired of desiredOptions.filter(Boolean)) {
       await combobox.click({ force: true }).catch(() => {})
       await this.sleep(250)
       const isInput = await combobox.evaluate((el: Element) => el instanceof HTMLInputElement).catch(() => false)
       if (isInput && combobox.fill) await combobox.fill(desired).catch(() => {})
-      else { await this.page.keyboard.press("Control+A").catch(() => {}); await this.page.keyboard.type(desired, { delay: 25 }).catch(() => {}) }
+      else { await p!.keyboard.press("Control+A").catch(() => {}); await p!.keyboard.type(desired, { delay: 25 }).catch(() => {}) }
       await this.sleep(700)
-      const options = await this.page.$$("[role='option'], div[role='option'], li, .basic-typeahead__selectable, .artdeco-typeahead__result").catch(() => [])
+      const options = await p!.$$("[role='option'], div[role='option'], li, .basic-typeahead__selectable, .artdeco-typeahead__result").catch(() => [])
       for (const option of options) {
         const text = normalizeText(await option.textContent().catch(() => "")).toLowerCase()
         if (text && (text === desired.toLowerCase() || text.includes(desired.toLowerCase()))) {
@@ -1037,10 +1020,11 @@ export class LinkedInBot {
   }
 
   private async answerComboboxWithGroq(combobox: any, label: string) {
-    if (!this.page || !USE_GROQ_FOR_COMPLEX_FORMS || !this.applicantProfile) return null
+    const p = this.activePage
+    if (!p || !USE_GROQ_FOR_COMPLEX_FORMS || !this.applicantProfile) return null
     await combobox.click({ force: true }).catch(() => {})
     await this.sleep(350)
-    const options = await this.page.$$eval("[role='option'], div[role='option'], li, .basic-typeahead__selectable, .artdeco-typeahead__result", (nodes) => nodes.map((n) => n.textContent?.replace(/\s+/g, " ").trim() || "").filter(Boolean).slice(0, 20)).catch(() => [] as string[])
+    const options = await p.$$eval("[role='option'], div[role='option'], li, .basic-typeahead__selectable, .artdeco-typeahead__result", (nodes) => nodes.map((n) => n.textContent?.replace(/\s+/g, " ").trim() || "").filter(Boolean).slice(0, 20)).catch(() => [] as string[])
     if (!options.length) return null
     const decision = await askGroqForFieldAnswer({ question: label, fieldType: "select", options, applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
     if (!decision?.answer || decision.shouldPause || decision.confidence < 65) return null
@@ -1050,8 +1034,9 @@ export class LinkedInBot {
   }
 
   private async uploadCV() {
-    if (!this.page) return false
-    const fileInputs = await this.page.$$("input[type='file']").catch(() => [])
+    const p = this.activePage
+    if (!p) return false
+    const fileInputs = await p.$$("input[type='file']").catch(() => [])
     for (const fileInput of fileInputs) {
       const visible = await fileInput.evaluate((el) => {
         const r = el.getBoundingClientRect()
@@ -1080,15 +1065,17 @@ export class LinkedInBot {
   // ── State Checks ───────────────────────────────────────────────────────────
 
   private async wasSubmitted() {
-    if (!this.page) return false
-    const body = await this.page.evaluate(() => document.body?.innerText?.replace(/\s+/g, " ").trim().toLowerCase() || "").catch(() => "")
+    const p = this.activePage
+    if (!p) return false
+    const body = await p.evaluate(() => document.body?.innerText?.replace(/\s+/g, " ").trim().toLowerCase() || "").catch(() => "")
     if (body.includes("application submitted") || body.includes("your application was sent") || body.includes("application sent") || body.includes("candidature envoy")) return true
-    return Boolean(await this.page.$("[aria-label*='Applied'], button:has-text('Applied'), .jobs-s-apply__application-link").catch(() => null))
+    return Boolean(await p.$("[aria-label*='Applied'], button:has-text('Applied'), .jobs-s-apply__application-link").catch(() => null))
   }
 
   private async getInlineError() {
-    if (!this.page) return ""
-    return this.page.evaluate(() => {
+    const p = this.activePage
+    if (!p) return ""
+    return p.evaluate(() => {
       for (const node of Array.from(document.querySelectorAll(".artdeco-inline-feedback--error"))) {
         const el = node as HTMLElement
         const r = el.getBoundingClientRect()
@@ -1103,11 +1090,13 @@ export class LinkedInBot {
   }
 
   private async dismissModal() {
-    if (!this.page) return
-    const close = await this.page.$("button[aria-label='Dismiss'], button[aria-label='Close']").catch(() => null)
+    const p = this.activePage
+    if (!p) return
+    const close = await p.$("button[aria-label='Dismiss'], button[aria-label='Close']").catch(() => null)
     if (close) { await this.safeClick(close); await this.sleep(400) }
-    const discard = await this.page.$("button:has-text('Discard'), button:has-text('Exit'), button:has-text('Cancel')").catch(() => null)
+    const discard = await p.$("button:has-text('Discard'), button:has-text('Exit'), button:has-text('Cancel')").catch(() => null)
     if (discard) { await this.safeClick(discard); await this.sleep(400) }
+    if (this.modalPage) { await this.modalPage.close().catch(() => {}); this.modalPage = null }
   }
 
   // ── Main Run ───────────────────────────────────────────────────────────────
