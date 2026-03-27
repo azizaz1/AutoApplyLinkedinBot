@@ -1,64 +1,39 @@
-import { chromium, Browser, Page, ElementHandle } from "playwright"
+import { chromium, Browser, Page } from "playwright"
 import * as path from "path"
 import * as fs from "fs"
 import {
   askGroqForFieldAnswer,
+  generateFrenchCoverLetter,
   suggestJobTitlesFromProfile,
   type GroqApplicantProfile,
 } from "../lib/groq-apply"
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
 const DEFAULT_JOB_TITLES = [
-  "Centre d'appel",
-  "Call Center Agent",
-  "Customer Service Representative",
-  "Teleconseiller",
-  "Teleconseiller Francophone",
-  "Customer Support Specialist",
-  "Agent Support Client",
-  "Customer Advisor",
-  "Call Center Representative",
-  "Customer Care Agent",
-  "Customer Experience Specialist",
-  "Service Client",
-  "Conseiller Client",
-  "Conseiller Clientele",
-  "Agent Centre d'Appel",
-  "Charge Clientele",
-  "Inbound Call Center Agent",
-  "Outbound Call Center Agent",
-  "Bilingual Customer Support",
-  "French Customer Service",
-  "Support Client Francophone",
-  "Teleoperateur",
-  "Agent Relation Client",
-  "Agent Relation Clientele",
-  "Conseiller Commercial",
-  "Commercial Sedentaire",
-  "Inside Sales Representative",
-  "Sales Development Representative",
-  "Appointment Setter",
-  "Lead Generation Specialist",
-  "Support Technique",
-  "Technical Support Agent",
-  "Help Desk Agent",
-  "IT Support Specialist",
-  "Back Office Agent",
-  "Back Office Executive",
-  "Chat Support Agent",
-  "Email Support Agent",
-  "Client Success Specialist",
-  "Customer Success Associate",
-  "Customer Onboarding Specialist",
-  "Retention Specialist",
-  "Collections Agent",
-  "Receptionist",
-  "Virtual Assistant",
+  "Centre d'appel", "Call Center Agent", "Customer Service Representative",
+  "Teleconseiller", "Teleconseiller Francophone", "Customer Support Specialist",
+  "Agent Support Client", "Customer Advisor", "Call Center Representative",
+  "Customer Care Agent", "Customer Experience Specialist", "Service Client",
+  "Conseiller Client", "Conseiller Clientele", "Agent Centre d'Appel",
+  "Charge Clientele", "Inbound Call Center Agent", "Outbound Call Center Agent",
+  "Bilingual Customer Support", "French Customer Service", "Support Client Francophone",
+  "Teleoperateur", "Agent Relation Client", "Agent Relation Clientele",
+  "Conseiller Commercial", "Commercial Sedentaire", "Inside Sales Representative",
+  "Sales Development Representative", "Appointment Setter", "Lead Generation Specialist",
+  "Support Technique", "Technical Support Agent", "Help Desk Agent",
+  "IT Support Specialist", "Back Office Agent", "Back Office Executive",
+  "Chat Support Agent", "Email Support Agent", "Client Success Specialist",
+  "Customer Success Associate", "Customer Onboarding Specialist",
+  "Retention Specialist", "Collections Agent", "Receptionist", "Virtual Assistant",
 ]
+
 const WORLDWIDE_LOCATION = "Worldwide"
 const MAX_APPLIES_PER_RUN = 20
 const DELAY_BETWEEN_JOBS = 3000
-const PAUSE_BEFORE_SUBMIT = false
 const USE_GROQ_FOR_COMPLEX_FORMS = true
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface LinkedInJob {
   id: string
@@ -136,19 +111,7 @@ interface ApplicationAnswers {
   inSanctionedTerritories: "yes" | "no"
 }
 
-interface ActionButtonMatch {
-  handle: ElementHandle
-  label: string
-}
-
-interface ApplyRootSnapshot {
-  found: boolean
-  score: number
-  title: string
-  fields: number
-  buttons: string[]
-  text: string
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function normalizeText(value: string | null | undefined): string {
   return (value || "").replace(/\s+/g, " ").trim()
@@ -169,12 +132,18 @@ function looksLikePlaceholderValue(value: string): boolean {
   return ["select", "select...", "select an option", "choose", "choose an option", "--", "---"].includes(lowered)
 }
 
+function fallbackCoverLetter(profile?: LinkedInBotProfile, job?: { title: string; company: string }) {
+  const fullName = normalizeText(profile?.fullName) || "Med Aziz Azaiez"
+  const currentTitle = normalizeText(profile?.currentTitle) || "professionnel polyvalent"
+  const skills = (profile?.skills || []).slice(0, 5).map((v) => normalizeText(v)).filter(Boolean).join(", ")
+  return `Bonjour,\n\nJe souhaite proposer ma candidature pour le poste de ${job?.title || "votre offre"} chez ${job?.company || "votre entreprise"}. Mon parcours en ${currentTitle}${skills ? `, avec des competences en ${skills},` : ""} me permet de contribuer rapidement avec serieux, adaptabilite et sens du service.\n\nJe suis motive, a l'aise dans les environnements exigeants et disponible pour echanger plus en detail sur ma motivation et la valeur que je peux apporter a votre equipe.\n\nCordialement,\n${fullName}`
+}
+
 function buildDefaultAnswers(email: string): ApplicationAnswers {
   const fullName = normalizeText(process.env.APPLICANT_FULL_NAME)
   const parts = fullName.split(" ").filter(Boolean)
   const firstName = normalizeText(process.env.APPLICANT_FIRST_NAME) || parts[0] || "Med"
   const lastName = normalizeText(process.env.APPLICANT_LAST_NAME) || parts.slice(1).join(" ") || "Aziz"
-
   return {
     firstName,
     lastName,
@@ -207,7 +176,6 @@ function buildAnswersFromProfile(email: string, profile?: LinkedInBotProfile): A
   const fallback = buildDefaultAnswers(email)
   const fullName = normalizeText(profile?.fullName)
   const parts = fullName.split(" ").filter(Boolean)
-
   return {
     ...fallback,
     firstName: normalizeText(parts[0]) || fallback.firstName,
@@ -237,6 +205,8 @@ function buildAnswersFromProfile(email: string, profile?: LinkedInBotProfile): A
   }
 }
 
+// ─── Bot ──────────────────────────────────────────────────────────────────────
+
 export class LinkedInBot {
   private browser: Browser | null = null
   private page: Page | null = null
@@ -254,7 +224,15 @@ export class LinkedInBot {
   private searchLocations: string[] = [WORLDWIDE_LOCATION]
   private results: ApplyResult[] = []
 
-  constructor(email: string, password: string, cvPath: string, profile?: LinkedInBotProfile, onResult?: ApplyResultHandler, onLog?: LogHandler, shouldStop?: StopHandler) {
+  constructor(
+    email: string,
+    password: string,
+    cvPath: string,
+    profile?: LinkedInBotProfile,
+    onResult?: ApplyResultHandler,
+    onLog?: LogHandler,
+    shouldStop?: StopHandler,
+  ) {
     this.email = email
     this.password = password
     this.cvPath = cvPath
@@ -265,6 +243,8 @@ export class LinkedInBot {
     this.answers = buildAnswersFromProfile(email, profile)
   }
 
+  // ── Utilities ──────────────────────────────────────────────────────────────
+
   private async log(message: string, type = "status") {
     console.log(message)
     if (this.onLog) await this.onLog(message, type)
@@ -274,6 +254,18 @@ export class LinkedInBot {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
+  private async isStopRequested() {
+    return this.shouldStop ? Boolean(await this.shouldStop()) : false
+  }
+
+  private async safeClick(el: { click: (o?: { force?: boolean; timeout?: number }) => Promise<unknown>; scrollIntoViewIfNeeded?: () => Promise<void>; evaluate?: <T>(fn: (e: Element) => T) => Promise<T> }) {
+    try { if (el.scrollIntoViewIfNeeded) await el.scrollIntoViewIfNeeded().catch(() => {}); await el.click({ timeout: 5000 }); return } catch {}
+    try { await el.click({ force: true, timeout: 3000 }); return } catch {}
+    if (el.evaluate) await el.evaluate((e) => (e as HTMLElement).click()).catch(() => {})
+  }
+
+  // ── Browser / Auth ─────────────────────────────────────────────────────────
+
   private async persistStorageState() {
     if (!this.page) return
     try {
@@ -282,50 +274,11 @@ export class LinkedInBot {
     } catch {}
   }
 
-  private async isStopRequested() {
-    return this.shouldStop ? Boolean(await this.shouldStop()) : false
-  }
-
-  private getFallbackSearchTitles() {
-    const desired = (this.applicantProfile?.desiredTitles || []).map((value) => normalizeText(value)).filter(Boolean)
-    return desired.length ? Array.from(new Set(desired)) : DEFAULT_JOB_TITLES
-  }
-
-  private getSearchLocations() {
-    if (this.applicantProfile?.remoteOnly) return ["Remote"]
-    const desired = normalizeText(this.applicantProfile?.desiredLocation)
-    return desired ? [desired] : [WORLDWIDE_LOCATION]
-  }
-  private async prepareSearchStrategy() {
-    this.searchTitles = this.getFallbackSearchTitles()
-    this.searchLocations = this.getSearchLocations()
-
-    if (!this.applicantProfile) {
-      await this.log(`Search locations: ${this.searchLocations.join(", ")}`)
-      return
-    }
-
-    try {
-      const suggestion = await suggestJobTitlesFromProfile(this.applicantProfile)
-      if (suggestion?.titles?.length) {
-        this.searchTitles = suggestion.titles
-        await this.log(`AI selected job titles: ${suggestion.titles.join(", ")}`)
-      } else {
-        await this.log(`Using profile job titles: ${this.searchTitles.join(", ")}`)
-      }
-    } catch (error) {
-      await this.log(`AI title selection failed, using fallback titles: ${error instanceof Error ? error.message : String(error)}`, "error")
-    }
-
-    await this.log(`Search locations: ${this.searchLocations.join(", ")}`)
-  }
-
   private async isLoggedIn() {
     if (!this.page) return false
     const url = this.page.url().toLowerCase()
     if (url.includes("/login")) return false
     if (await this.isVerificationRequired()) return false
-
     return this.page.evaluate(() => {
       const hasNav = Boolean(document.querySelector("header.global-nav, .global-nav__content, [data-test-global-nav]"))
       const hasFeedLink = Boolean(document.querySelector("a[href*='/feed/'], a[href*='/mynetwork/']"))
@@ -339,7 +292,6 @@ export class LinkedInBot {
     if (!this.page) return false
     const url = this.page.url().toLowerCase()
     if (url.includes("/checkpoint") || url.includes("/challenge") || url.includes("/captcha") || url.includes("/uas/account-restricted")) return true
-
     const text = await this.page.evaluate(() => document.body?.innerText?.replace(/\s+/g, " ").trim().toLowerCase() || "").catch(() => "")
     return text.includes("quick security check") || text.includes("security verification") || text.includes("captcha") || text.includes("verify your identity") || text.includes("vérification de sécurité") || text.includes("verification de securite")
   }
@@ -347,9 +299,7 @@ export class LinkedInBot {
   private async waitForVerificationResolution() {
     if (!this.page) return false
     await this.log("LinkedIn verification required. Complete it manually in the open browser.", "error")
-    await this.log("The browser will stay open on the verification page until you finish.", "status")
-
-    for (let attempt = 0; attempt < 600; attempt++) {
+    for (let i = 0; i < 600; i++) {
       if (await this.isStopRequested()) return false
       await this.sleep(2000)
       if (!(await this.isVerificationRequired())) {
@@ -357,85 +307,31 @@ export class LinkedInBot {
         await this.sleep(1000)
         if (!(await this.isVerificationRequired()) && (await this.isLoggedIn())) {
           await this.persistStorageState()
-          await this.log("LinkedIn verification completed. Resuming bot.", "status")
+          await this.log("Verification completed. Resuming.", "status")
           return true
         }
       }
     }
-
-    await this.log("Verification was not completed in time. Stopping LinkedIn run.", "error")
+    await this.log("Verification not completed in time. Stopping.", "error")
     return false
   }
 
   private async waitForManualLoginResolution() {
     if (!this.page) return false
     await this.log("LinkedIn needs manual login in the open browser.", "error")
-    await this.log("Complete the login or challenge manually, and the bot will resume when LinkedIn reaches the home feed.", "status")
-
-    for (let attempt = 0; attempt < 600; attempt++) {
+    for (let i = 0; i < 600; i++) {
       if (await this.isStopRequested()) return false
       await this.sleep(2000)
-      if (await this.isVerificationRequired()) {
-        const ok = await this.waitForVerificationResolution()
-        if (!ok) return false
-      }
-      if (await this.isLoggedIn()) {
-        await this.persistStorageState()
-        await this.log("Manual LinkedIn login completed. Resuming bot.", "status")
-        return true
-      }
+      if (await this.isVerificationRequired()) { const ok = await this.waitForVerificationResolution(); if (!ok) return false }
+      if (await this.isLoggedIn()) { await this.persistStorageState(); await this.log("Manual login completed. Resuming.", "status"); return true }
     }
-
-    await this.log("Manual LinkedIn login was not completed in time. Stopping LinkedIn run.", "error")
+    await this.log("Manual login not completed in time. Stopping.", "error")
     return false
   }
 
   private async ensureVerificationCleared() {
-    if (!(await this.isVerificationRequired())) {
-      if (await this.isLoggedIn()) await this.persistStorageState()
-      return true
-    }
+    if (!(await this.isVerificationRequired())) { if (await this.isLoggedIn()) await this.persistStorageState(); return true }
     return this.waitForVerificationResolution()
-  }
-
-  private async maybeAcceptCookieBanner() {
-    if (!this.page) return
-    const buttons = await this.page.$$("button:visible").catch(() => [])
-    for (const button of buttons) {
-      const text = normalizeText(await button.evaluate((el) => (el as HTMLElement).innerText || el.getAttribute("aria-label") || "").catch(() => "")).toLowerCase()
-      if (!text || text.includes("reject") || text.includes("decline") || text.includes("refuse")) continue
-      if (text.includes("accept") || text.includes("agree") || text.includes("allow") || text.includes("accepter") || text.includes("autoriser")) {
-        await this.safeClick(button)
-        await this.sleep(600)
-        return
-      }
-    }
-  }
-
-  private async findLoginInputs() {
-    if (!this.page) return { emailInput: null as any, passwordInput: null as any }
-    let emailInput = null
-    for (const selector of ["input#username:visible", "input[name='session_key']:visible", "input[type='email']:visible", "input[autocomplete='username']:visible", "input[autocomplete='email']:visible"]) {
-      emailInput = await this.page.$(selector).catch(() => null)
-      if (emailInput) break
-    }
-
-    let passwordInput = null
-    for (const selector of ["input#password:visible", "input[name='session_password']:visible", "input[type='password']:visible", "input[autocomplete='current-password']:visible"]) {
-      passwordInput = await this.page.$(selector).catch(() => null)
-      if (passwordInput) break
-    }
-
-    return { emailInput, passwordInput }
-  }
-
-  private async findSignInButton() {
-    if (!this.page) return null
-    for (const selector of ["button[type='submit']:visible", "input[type='submit']:visible", "button:has-text('Sign in'):visible", "button:has-text('Log in'):visible", "button:has-text('Se connecter'):visible"]) {
-      const button = await this.page.$(selector).catch(() => null)
-      if (button) return button
-    }
-    return null
   }
 
   async launch() {
@@ -456,55 +352,90 @@ export class LinkedInBot {
 
     await this.page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {})
     await this.sleep(1000)
-    if (await this.isLoggedIn()) {
-      await this.log("Already logged in")
-      return true
-    }
+    if (await this.isLoggedIn()) { await this.log("Already logged in"); return true }
 
     await this.page.goto("https://www.linkedin.com/login", { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {})
     await this.sleep(800)
-    await this.maybeAcceptCookieBanner()
+
+    // Accept cookie banner
+    for (const btn of await this.page.$$("button:visible").catch(() => [])) {
+      const text = normalizeText(await btn.evaluate((el) => (el as HTMLElement).innerText || el.getAttribute("aria-label") || "").catch(() => "")).toLowerCase()
+      if (!text || text.includes("reject") || text.includes("decline")) continue
+      if (text.includes("accept") || text.includes("agree") || text.includes("allow") || text.includes("accepter")) { await this.safeClick(btn); await this.sleep(600); break }
+    }
 
     if (await this.isVerificationRequired()) return this.waitForVerificationResolution()
 
-    let { emailInput, passwordInput } = await this.findLoginInputs()
+    // Fill login form
+    let emailInput: any = null
+    for (const sel of ["input#username:visible", "input[name='session_key']:visible", "input[type='email']:visible"]) {
+      emailInput = await this.page.$(sel).catch(() => null)
+      if (emailInput) break
+    }
+    let passwordInput: any = null
+    for (const sel of ["input#password:visible", "input[name='session_password']:visible", "input[type='password']:visible"]) {
+      passwordInput = await this.page.$(sel).catch(() => null)
+      if (passwordInput) break
+    }
+
     if (emailInput && !passwordInput) {
       await emailInput.fill(this.email).catch(() => {})
       await this.page.keyboard.press("Enter").catch(() => {})
       await this.sleep(800)
-      ;({ emailInput, passwordInput } = await this.findLoginInputs())
+      for (const sel of ["input#password:visible", "input[name='session_password']:visible", "input[type='password']:visible"]) {
+        passwordInput = await this.page.$(sel).catch(() => null)
+        if (passwordInput) break
+      }
     }
 
-    if (!emailInput || !passwordInput) {
-      await this.log("Could not find the standard LinkedIn login form. LinkedIn may be showing a different page or challenge.", "error")
-      return this.waitForManualLoginResolution()
-    }
+    if (!emailInput || !passwordInput) return this.waitForManualLoginResolution()
 
     await emailInput.fill(this.email).catch(() => {})
     await passwordInput.fill(this.password).catch(() => {})
-    const signInButton = await this.findSignInButton()
+
+    let signInButton: any = null
+    for (const sel of ["button[type='submit']:visible", "input[type='submit']:visible", "button:has-text('Sign in'):visible", "button:has-text('Log in'):visible"]) {
+      signInButton = await this.page.$(sel).catch(() => null)
+      if (signInButton) break
+    }
     if (!signInButton) return this.waitForManualLoginResolution()
 
     await this.safeClick(signInButton)
     await this.page.waitForLoadState("domcontentloaded", { timeout: 60000 }).catch(() => {})
     await this.sleep(1500)
 
-    if (await this.isLoggedIn()) {
-      await this.persistStorageState()
-      await this.log("Logged in successfully")
-      return true
-    }
-
+    if (await this.isLoggedIn()) { await this.persistStorageState(); await this.log("Logged in successfully"); return true }
     if (await this.isVerificationRequired()) {
       const ok = await this.waitForVerificationResolution()
-      if (ok && (await this.isLoggedIn())) {
-        await this.persistStorageState()
-        await this.log("Logged in successfully")
-        return true
-      }
+      if (ok && (await this.isLoggedIn())) { await this.persistStorageState(); await this.log("Logged in successfully"); return true }
     }
-
     return this.waitForManualLoginResolution()
+  }
+
+  // ── Job Search ─────────────────────────────────────────────────────────────
+
+  private getFallbackSearchTitles() {
+    const desired = (this.applicantProfile?.desiredTitles || []).map((v) => normalizeText(v)).filter(Boolean)
+    return desired.length ? Array.from(new Set(desired)) : DEFAULT_JOB_TITLES
+  }
+
+  private getSearchLocations() {
+    if (this.applicantProfile?.remoteOnly) return ["Remote"]
+    const desired = normalizeText(this.applicantProfile?.desiredLocation)
+    return desired ? [desired] : [WORLDWIDE_LOCATION]
+  }
+
+  private async prepareSearchStrategy() {
+    this.searchTitles = this.getFallbackSearchTitles()
+    this.searchLocations = this.getSearchLocations()
+    if (this.applicantProfile) {
+      try {
+        const suggestion = await suggestJobTitlesFromProfile(this.applicantProfile)
+        if (suggestion?.titles?.length) { this.searchTitles = suggestion.titles; await this.log(`AI selected job titles: ${suggestion.titles.join(", ")}`) }
+        else await this.log(`Using profile job titles: ${this.searchTitles.join(", ")}`)
+      } catch (e) { await this.log(`AI title selection failed: ${e instanceof Error ? e.message : String(e)}`, "error") }
+    }
+    await this.log(`Search locations: ${this.searchLocations.join(", ")}`)
   }
 
   async searchJobs(query: string, location: string): Promise<LinkedInJob[]> {
@@ -519,26 +450,16 @@ export class LinkedInBot {
     await this.sleep(1800)
     if (!(await this.ensureVerificationCleared())) return []
 
-    try {
-      await this.page.waitForSelector(".jobs-search__results-list, .scaffold-layout__list", { timeout: 10000 })
-    } catch {
-      await this.log("No jobs found for this search", "skipped")
-      return []
-    }
+    try { await this.page.waitForSelector(".jobs-search__results-list, .scaffold-layout__list", { timeout: 10000 }) }
+    catch { await this.log("No jobs found for this search", "skipped"); return [] }
 
-    await this.scrollJobList()
+    // Scroll to load more jobs
+    const list = await this.page.$(".jobs-search__results-list, .scaffold-layout__list").catch(() => null)
+    if (list) for (let i = 0; i < 3; i++) { await list.evaluate((el) => el.scrollBy(0, 600)).catch(() => {}); await this.sleep(800) }
 
     const jobs = await this.page.evaluate(() => {
-      const normalize = (value: string | null | undefined) => (value || "").replace(/\s+/g, " ").trim()
-      const dedupe = (value: string) => {
-        const text = normalize(value)
-        const half = text.length / 2
-        if (!Number.isInteger(half)) return text
-        const a = text.slice(0, half).trim()
-        const b = text.slice(half).trim()
-        return a && a === b ? a : text
-      }
-
+      const normalize = (v: string | null | undefined) => (v || "").replace(/\s+/g, " ").trim()
+      const dedupe = (v: string) => { const t = normalize(v); const half = t.length / 2; if (!Number.isInteger(half)) return t; const a = t.slice(0, half).trim(); const b = t.slice(half).trim(); return a && a === b ? a : t }
       const cards = document.querySelectorAll(".jobs-search__results-list li, .scaffold-layout__list-item")
       const results: LinkedInJob[] = []
       cards.forEach((card) => {
@@ -548,7 +469,6 @@ export class LinkedInBot {
         const linkEl = card.querySelector("a[href*='/jobs/view/']") as HTMLAnchorElement | null
         const applyText = normalize(card.querySelector(".job-card-container__apply-method")?.textContent || card.querySelector(".job-card-list__footer-wrapper")?.textContent || "").toLowerCase()
         if (!titleEl || !linkEl) return
-
         const href = linkEl.href
         const idMatch = href.match(/\/jobs\/view\/(\d+)/)
         results.push({
@@ -566,62 +486,48 @@ export class LinkedInBot {
     await this.log(`Found ${jobs.length} Easy Apply jobs`)
     return jobs
   }
+
+  // ── Apply Flow ─────────────────────────────────────────────────────────────
+
   async applyToJob(job: LinkedInJob): Promise<ApplyResult> {
     if (!this.page) throw new Error("Browser not launched")
-
     try {
-      if (!(await this.ensureVerificationCleared())) {
-        return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
-      }
+      if (!(await this.ensureVerificationCleared())) return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
 
-      await this.page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 60000 })
-      await this.sleep(1800)
-      if (!(await this.ensureVerificationCleared())) {
-        return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
-      }
+      // Navigate to clean standalone job URL (avoids split-view redirect issues)
+      const jobUrl = `https://www.linkedin.com/jobs/view/${job.id}/`
+      await this.page.goto(jobUrl, { waitUntil: "domcontentloaded", timeout: 60000 })
+      await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {})
+      await this.sleep(1500)
+      if (!(await this.ensureVerificationCleared())) return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
 
-      const details = await this.getJobDetailsFromPage()
-      const resolvedJob: LinkedInJob = {
-        ...job,
-        title: details.title || dedupeRepeatedText(job.title),
-        company: details.company || normalizeText(job.company),
-        location: details.location || normalizeText(job.location),
-      }
+      // Get real job details from page
+      const details = await this.page.evaluate(() => {
+        const read = (sels: string[]) => { for (const s of sels) { const t = (document.querySelector(s)?.textContent || "").replace(/\s+/g, " ").trim(); if (t) return t } return "" }
+        return {
+          title: read([".job-details-jobs-unified-top-card__job-title h1", ".t-24.job-details-jobs-unified-top-card__job-title", ".jobs-unified-top-card__job-title h1"]),
+          company: read([".job-details-jobs-unified-top-card__company-name a", ".job-details-jobs-unified-top-card__company-name", ".jobs-unified-top-card__company-name a"]),
+          location: read([".job-details-jobs-unified-top-card__primary-description-container", ".jobs-unified-top-card__subtitle-primary-grouping"]),
+        }
+      }).catch(() => ({ title: "", company: "", location: "" }))
+
+      const resolvedJob = { ...job, title: details.title || dedupeRepeatedText(job.title), company: details.company || normalizeText(job.company), location: details.location || normalizeText(job.location) }
       this.currentJobContext = { title: resolvedJob.title, company: resolvedJob.company, location: resolvedJob.location }
-
       await this.log(`Applying to: ${resolvedJob.title} at ${resolvedJob.company || "Unknown company"}`)
 
+      // Skip if already applied
       const alreadyApplied = await this.page.$("[aria-label*='Applied'], button:has-text('Applied'), .jobs-s-apply__application-link").catch(() => null)
-      if (alreadyApplied) {
-        await this.log("Already applied. Skipping", "skipped")
-        return { jobId: resolvedJob.id, title: resolvedJob.title, company: resolvedJob.company, status: "already_applied" }
-      }
+      if (alreadyApplied) { await this.log("Already applied. Skipping", "skipped"); return { ...resolvedJob, jobId: resolvedJob.id, status: "already_applied" } }
 
-      const easyApplyButton = await this.findEasyApplyButton()
-      if (!easyApplyButton) {
-        await this.log("No Easy Apply button. Skipping", "skipped")
-        return { jobId: resolvedJob.id, title: resolvedJob.title, company: resolvedJob.company, status: "skipped", reason: "No Easy Apply" }
-      }
-
-      await this.safeClick(easyApplyButton)
-      await this.sleep(500)
-      await this.log(`Apply transition: ${await this.describeApplyTransition()}`)
-
-      const hasSurface = await this.waitForApplicationSurface(15000)
-      if (!hasSurface) {
-        const surface = await this.describeSurface()
-        await this.log(`Easy Apply click did not open an application modal. Skipping. ${surface}`, "skipped")
-        return { jobId: resolvedJob.id, title: resolvedJob.title, company: resolvedJob.company, status: "skipped", reason: "No application modal" }
-      }
+      // Open Easy Apply modal
+      const opened = await this.openEasyApplyModal()
+      if (!opened) { await this.log("Easy Apply modal did not open. Skipping.", "skipped"); return { ...resolvedJob, jobId: resolvedJob.id, status: "skipped", reason: "No application modal" } }
 
       const result = await this.handleApplicationFlow()
-      if (result.status === "applied") {
-        await this.log("Applied successfully")
-        return { jobId: resolvedJob.id, title: resolvedJob.title, company: resolvedJob.company, status: "applied" }
-      }
+      if (result.status === "applied") { await this.log("Applied successfully"); return { ...resolvedJob, jobId: resolvedJob.id, status: "applied" } }
 
       await this.log(`Skipped. ${result.reason || "Requires extra info"}`, "skipped")
-      return { jobId: resolvedJob.id, title: resolvedJob.title, company: resolvedJob.company, status: "skipped", reason: result.reason }
+      return { ...resolvedJob, jobId: resolvedJob.id, status: "skipped", reason: result.reason }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       await this.log(`Failed: ${msg}`, "error")
@@ -629,126 +535,135 @@ export class LinkedInBot {
     }
   }
 
-  private async waitForApplicationSurface(timeoutMs: number): Promise<boolean> {
-    if (!this.page) return false
-    // Use Playwright's built-in polling — wait until visible inputs exceed the
-    // LinkedIn page baseline (2 search bars) OR modal-specific text appears
-    try {
-      await this.page.waitForFunction(
-        () => {
-          const vis = (el: Element) => {
-            const r = (el as HTMLElement).getBoundingClientRect()
-            return r.width > 5 && r.height > 5
-          }
-          const inputs = Array.from(document.querySelectorAll("input, select, textarea")).filter(vis)
-          if (inputs.length > 2) return true
-          const body = (document.body.textContent || "").toLowerCase()
-          return (
-            body.includes("application powered by linkedin") ||
-            body.includes("submitting this application") ||
-            body.includes("assurez-vous d'inclure")
-          )
-        },
-        undefined,
-        { timeout: timeoutMs, polling: 400 }
-      )
-      return true
-    } catch {
-      return false
+  private async findEasyApplyButton() {
+    if (!this.page) return null
+
+    // Strategy 1: Playwright :has-text() — matches button text directly, no aria-label needed
+    const byText = await this.page.waitForSelector("button:has-text('Easy Apply')", { state: "visible", timeout: 8000 }).catch(() => null)
+    if (byText) return byText
+
+    // Strategy 2: aria-label fallback
+    const byAriaLabel = await this.page.$("button[aria-label*='Easy Apply']").catch(() => null)
+    if (byAriaLabel) return byAriaLabel
+
+    // Strategy 3: known LinkedIn CSS classes
+    for (const sel of ["button.jobs-apply-button", ".jobs-s-apply button", ".jobs-apply-button--top-card button"]) {
+      const el = await this.page.$(sel).catch(() => null)
+      if (el) return el
     }
+
+    // Strategy 4: JS DOM search — finds Easy Apply in any element/role, returns a handle via index
+    const jsResult = await this.page.evaluate(() => {
+      const all = Array.from(document.querySelectorAll('button, [role="button"], a'))
+      const match = all.find(el => {
+        const text = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").toLowerCase()
+        return text.includes("easy apply")
+      })
+      if (!match) {
+        // Log what elements exist for debugging
+        const btns = all.map(el => ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim()).filter(Boolean)
+        return { found: false, debug: btns.slice(0, 15).join(" | ") }
+      }
+      const h = match as HTMLElement
+      h.click()
+      return { found: true, debug: (h.innerText || match.getAttribute("aria-label") || "").trim() }
+    }).catch(() => ({ found: false, debug: "evaluate failed" }))
+
+    if (jsResult.found) {
+      await this.log(`JS-clicked Easy Apply: ${jsResult.debug}`)
+      return "js-clicked" as unknown as Awaited<ReturnType<typeof this.page.$>>
+    }
+
+    await this.log(`No Easy Apply button. Elements: ${jsResult.debug}`, "error")
+    return null
+  }
+
+  private async openEasyApplyModal(): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0 && (await this.isModalOpen(1500))) { await this.log("Modal already open"); return true }
+
+      // Find Easy Apply button
+      const btn = await this.findEasyApplyButton()
+      if (!btn) { await this.log("Easy Apply button not found", "error"); return false }
+
+      // If JS already clicked it (sentinel value), skip the Playwright click
+      const jsAlreadyClicked = (btn as unknown as string) === "js-clicked"
+      if (!jsAlreadyClicked) {
+        const label = await btn.evaluate((el) => ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").trim()).catch(() => "?")
+        await this.log(`Clicking Easy Apply button: "${label}" (attempt ${attempt + 1})`)
+        try {
+          const box = await btn.boundingBox()
+          if (box && this.page) {
+            const x = box.x + box.width / 2, y = box.y + box.height / 2
+            await this.page.mouse.move(x - 10, y - 5); await this.sleep(100)
+            await this.page.mouse.move(x, y); await this.sleep(80)
+            await this.page.mouse.click(x, y)
+          } else await this.safeClick(btn)
+        } catch { await this.safeClick(btn) }
+      }
+
+      if (await this.isModalOpen(8000 + attempt * 2000)) return true
+      await this.log(`Modal did not appear on attempt ${attempt + 1}. Retrying...`, "status")
+    }
+    return false
+  }
+
+  /** Detects the Easy Apply modal by looking for the "Apply to [Company]" heading */
+  private async isModalOpen(timeoutMs = 2000): Promise<boolean> {
+    if (!this.page) return false
+    try {
+      await this.page.locator("h1, h2, h3, h4, [role='heading']")
+        .filter({ hasText: /apply to|postuler (à|a)|candidature/i })
+        .first()
+        .waitFor({ state: "visible", timeout: timeoutMs })
+      return true
+    } catch { return false }
   }
 
   private async handleApplicationFlow(): Promise<ApplicationFlowResult> {
-    if (!this.page) return { status: "skipped", reason: "Browser page unavailable" }
+    if (!this.page) return { status: "skipped", reason: "No page" }
 
-    let cvUploaded = false
-    let noActionCount = 0
-
-    for (let step = 0; step < 20; step++) {
+    for (let step = 0; step < 12; step++) {
       try {
-        if (!(await this.ensureVerificationCleared())) return { status: "skipped", reason: "LinkedIn verification required" }
-        if (await this.isStopRequested()) {
-          await this.dismissApplicationModal()
-          return { status: "skipped", reason: "Stopped manually" }
+        if (!(await this.ensureVerificationCleared())) return { status: "skipped", reason: "Verification required" }
+        if (await this.isStopRequested()) { await this.dismissModal(); return { status: "skipped", reason: "Stopped manually" } }
+
+        // Check modal still open
+        if (!(await this.isModalOpen(3000))) {
+          if (await this.wasSubmitted()) return { status: "applied", reason: "Submitted" }
+          return { status: "skipped", reason: step === 0 ? "Modal disappeared" : "Modal closed before submit" }
         }
 
-        await this.sleep(1000)
+        // Log step info
+        const heading = await this.page.locator("h1, h2, h3, h4, [role='heading']").filter({ hasText: /apply to|postuler (à|a)|candidature/i }).first().textContent().catch(() => "")
+        await this.log(`Step ${step}${heading ? ` - ${heading.trim()}` : ""}`)
 
-        // Check modal is still open
-        const stillOpen = await this.page.evaluate(() => {
-          const vis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 5 && r.height > 5 }
-          if (Array.from(document.querySelectorAll("input, select, textarea")).filter(vis).length > 2) return true
-          const body = (document.body.textContent || "").toLowerCase()
-          return body.includes("application powered by linkedin") || body.includes("submitting this application") || body.includes("assurez-vous d'inclure")
-        }).catch(() => false)
+        // Fill form fields — wait a bit first for the modal content to fully render
+        await this.sleep(1200)
+        await this.fillStep()
+        await this.sleep(500)
 
-        if (!stillOpen) {
-          if (step === 0) {
-            await this.log("Modal closed unexpectedly, giving up")
-            return { status: "skipped", reason: "Modal disappeared" }
-          }
-          // Could be submitted and page changed
-          await this.log("Modal closed — likely submitted or navigated")
-          return { status: "applied", reason: "Submitted" }
-        }
+        // Click Next / Submit
+        const clicked = await this.clickNextButton()
+        if (!clicked) return { status: "skipped", reason: "Could not find Next button" }
 
-        if (await this.hasCoverLetterRequirement()) {
-          await this.dismissApplicationModal()
-          return { status: "skipped", reason: "Cover letter required" }
-        }
+        await this.sleep(1800)
 
-        if (!cvUploaded) cvUploaded = await this.uploadCV()
-
-        await this.fillTextInputs()
-        await this.answerSelects()
-        await this.answerRadioButtons()
-        await this.answerCheckboxes()
-        await this.answerComboboxes()
-        await this.sleep(900) // Let React process events and enable Next
-
-        const action = await this.findPrimaryAction()
-        await this.log(`Step ${step}: action="${action?.label || "none"}"`)
-
-        if (!action) {
-          noActionCount++
-          if (noActionCount >= 3) {
-            // Force-click any Next/Submit button regardless of disabled state
-            const forced = await this.forceClickNextButton()
-            if (forced) {
-              await this.log("Force-clicked Next/Submit button")
-              noActionCount = 0
-              await this.sleep(1500)
-              continue
-            }
-            return { status: "skipped", reason: "Could not find or click Next button after 3 attempts" }
-          }
-          await this.sleep(1200)
-          continue
-        }
-        noActionCount = 0
-
-        if (this.isSubmitLabel(action.label)) {
-          if (PAUSE_BEFORE_SUBMIT) {
-            await this.log("Review the application in the browser, then press Enter here to submit")
-            await this.pauseForManualReview()
-          }
-          await this.safeClick(action.handle)
-          await this.sleep(2000)
-          const doneButton = await this.page.$("button[aria-label='Dismiss'], button:has-text('Done'), button:has-text('OK')").catch(() => null)
-          if (doneButton) await this.safeClick(doneButton)
+        // Check if submitted
+        if (await this.wasSubmitted()) {
+          const done = await this.page.$("button[aria-label='Dismiss'], button:has-text('Done'), button:has-text('OK')").catch(() => null)
+          if (done) await this.safeClick(done)
           await this.log("Application submitted")
           return { status: "applied", reason: "Submitted" }
         }
 
-        await this.log(`Clicking: ${action.label}`)
-        await this.safeClick(action.handle)
-        await this.sleep(1500)
+        // Log inline errors but keep going
+        const err = await this.getInlineError()
+        if (err) await this.log(`Form error: ${err}`, "error")
+
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        if (msg.includes("Execution context was destroyed") || msg.includes("navigation")) {
-          await this.sleep(1500)
-          continue
-        }
+        if (msg.includes("Execution context was destroyed") || msg.includes("navigation")) { await this.sleep(1500); continue }
         await this.log(`Step error: ${msg}`, "error")
         await this.sleep(1000)
       }
@@ -757,317 +672,75 @@ export class LinkedInBot {
     return { status: "skipped", reason: "Reached step limit" }
   }
 
-  private async hasVisibleApplicationSurface() {
+  /**
+   * Clicks the Next / Continue / Submit button in the Easy Apply modal.
+   *
+   * Strategy order:
+   *  1. LinkedIn's primary button class (most reliable)
+   *  2. getByRole with partial text match — no ^ $ anchors so "Continue to next step" matches
+   *  3. Any visible button whose text contains an action keyword
+   */
+  private async clickNextButton(): Promise<boolean> {
     if (!this.page) return false
-    return this.page.evaluate(() => {
-      const vis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 5 && r.height > 5 }
-      if (Array.from(document.querySelectorAll("input, select, textarea")).filter(vis).length > 2) return true
-      const body = (document.body.textContent || "").toLowerCase()
-      return body.includes("application powered by linkedin") || body.includes("submitting this application") || body.includes("assurez-vous d'inclure")
-    }).catch(() => false)
-  }
 
-  private async getModalContainer() {
-    if (!this.page) return null
-    const handle = await this.page.evaluateHandle(() => {
-      const isVisible = (node: Element | null) => {
-        if (!node) return false
-        const html = node as HTMLElement
-        const rect = html.getBoundingClientRect()
-        const style = window.getComputedStyle(html)
-        return rect.width > 100 && rect.height > 100 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
-      }
+    // LinkedIn's Easy Apply modal uses shadow DOM (artdeco web components).
+    // page.locator() and :has-text() PIERCE shadow DOM — page.$$() and evaluate() do NOT.
 
-      // Strategy 1: native <dialog open>
-      const openDialog = document.querySelector("dialog[open]")
-      if (openDialog && isVisible(openDialog)) return openDialog as HTMLElement
-
-      const looksLikeApplyModal = (el: Element | null) => {
-        if (!el || !isVisible(el)) return false
-        const text = (el.textContent || "").replace(/\s+/g, " ").toLowerCase()
-        const fieldCount = el.querySelectorAll("input, select, textarea, [role='combobox']").length
-        return (
-          text.includes("apply to ") ||
-          text.includes("application powered by linkedin") ||
-          text.includes("contact info") ||
-          text.includes("email address") ||
-          text.includes("mobile phone number") ||
-          text.includes("phone country code") ||
-          text.includes("easy apply") ||
-          fieldCount >= 2
-        )
-      }
-
-      // Strategy 2: aria role=dialog
-      for (const el of Array.from(document.querySelectorAll("[role='dialog']"))) {
-        if (looksLikeApplyModal(el)) return el as HTMLElement
-      }
-
-      // Strategy 3: LinkedIn known class names
-      for (const sel of [".jobs-easy-apply-modal", ".jobs-easy-apply-modal__content", ".jobs-easy-apply-content", ".jobs-apply-modal", ".artdeco-modal__content", ".artdeco-modal"]) {
-        const el = document.querySelector(sel)
-        if (looksLikeApplyModal(el)) return el as HTMLElement
-      }
-
-      // Strategy 4: walk up from Dismiss/Close button (always present in LinkedIn Easy Apply modal)
-      const dismissSelectors = ["button[aria-label='Dismiss']", "button[aria-label='Close']", "button[aria-label='Fermer']", "button[aria-label='Ignorer']"]
-      for (const sel of dismissSelectors) {
-        const dismissBtn = document.querySelector(sel)
-        if (!dismissBtn || !isVisible(dismissBtn)) continue
-        let el: HTMLElement | null = (dismissBtn as HTMLElement).parentElement
-        while (el && el !== document.body) {
-          const rect = el.getBoundingClientRect()
-          if (rect.width > 300 && rect.height > 200 && isVisible(el)) {
-            const text = (el.textContent || "").toLowerCase()
-            if (
-              text.includes("apply to ") ||
-              text.includes("application powered by linkedin") ||
-              text.includes("contact info") ||
-              text.includes("assurez") ||
-              el.querySelectorAll("input, select, textarea").length > 0
-            ) return el
-          }
-          el = el.parentElement
-        }
-      }
-
-      // Strategy 5: any centered fixed/absolute overlay with form fields or apply text
-      const applyKeywords = ["apply to ", "application powered by linkedin", "contact info", "easy apply", "assurez-vous"]
-      const allEls = Array.from(document.querySelectorAll("div, section, aside, article"))
-      const matches = allEls.filter((el) => {
-        if (!isVisible(el)) return false
-        const html = el as HTMLElement
-        const rect = html.getBoundingClientRect()
-        if (rect.width < 250 || rect.height < 150) return false
-        const style = window.getComputedStyle(html)
-        const isOverlay = style.position === "fixed" || style.position === "absolute" || Number(style.zIndex || 0) > 50
-        if (!isOverlay) return false
-        const centerX = rect.left + rect.width / 2
-        const centerY = rect.top + rect.height / 2
-        const centered =
-          Math.abs(centerX - window.innerWidth / 2) < window.innerWidth * 0.22 &&
-          Math.abs(centerY - window.innerHeight / 2) < window.innerHeight * 0.28
-        if (!centered) return false
-        const text = (el.textContent || "").replace(/\s+/g, " ").toLowerCase()
-        const hasApply = applyKeywords.some((kw) => text.includes(kw))
-        const hasFields = el.querySelectorAll("input, select, textarea, [role='combobox']").length >= 2
-        const hasNextLikeButton = Array.from(el.querySelectorAll("button, div[role='button'], a[role='button'], input[type='button'], input[type='submit']")).some((button) => {
-          const buttonText = (((button as HTMLElement).innerText || button.getAttribute("aria-label") || (button as HTMLInputElement).value || "").replace(/\s+/g, " ").trim().toLowerCase())
-          return buttonText.includes("next") || buttonText.includes("continue") || buttonText.includes("review") || buttonText.includes("submit") || buttonText.includes("suivant") || buttonText.includes("continuer") || buttonText.includes("envoyer")
-        })
-        const hasCloseButton = Array.from(el.querySelectorAll("button, div[role='button']")).some((button) => {
-          const buttonText = (((button as HTMLElement).innerText || button.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().toLowerCase())
-          return buttonText === "close" || buttonText.includes("dismiss") || buttonText === "×"
-        })
-        const hasProgressCue = text.includes("0%") || text.includes("100%")
-        return (hasApply || hasProgressCue) && hasFields && (hasNextLikeButton || hasCloseButton)
-      })
-      matches.sort((a, b) => {
-        const ra = (a as HTMLElement).getBoundingClientRect()
-        const rb = (b as HTMLElement).getBoundingClientRect()
-        return rb.width * rb.height - ra.width * ra.height
-      })
-      return (matches[0] as HTMLElement | undefined) || null
-    }).catch(() => null)
-
-    if (!handle) return null
-    const element = handle.asElement()
-    if (!element) {
-      await handle.dispose().catch(() => {})
-      return null
-    }
-    return element
-  }
-
-  private async describeApplyTransition() {
-    if (!this.page) return "no page"
-    await this.page.waitForLoadState("domcontentloaded", { timeout: 1200 }).catch(() => {})
-    const popupUrls = await this.inspectExternalApplyPages()
-    const pageDetail = await this.page.evaluate(() => {
-      const isVisible = (node: Element | null) => {
-        if (!node) return false
-        const html = node as HTMLElement
-        const rect = html.getBoundingClientRect()
-        const style = window.getComputedStyle(html)
-        return rect.width > 20 && rect.height > 20 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
-      }
-
-      const buttons = Array.from(document.querySelectorAll("button, a, div[role='button']")).filter((node) => isVisible(node)).map((node) => ((node as HTMLElement).innerText || node.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8)
-      const containers = ["dialog[open]", ".jobs-easy-apply-modal", ".jobs-easy-apply-modal__content", ".jobs-easy-apply-content", ".jobs-apply-modal", ".artdeco-modal", ".artdeco-modal__content", "[role='dialog']"]
-        .map((selector) => document.querySelector(selector))
-        .filter((node): node is Element => Boolean(node))
-        .filter((node) => isVisible(node))
-        .map((node) => ((node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || node.tagName.toLowerCase()))
-        .slice(0, 4)
-
-      const centeredOverlays = Array.from(document.querySelectorAll("div, section, aside, article"))
-        .filter((node) => {
-          if (!isVisible(node)) return false
-          const html = node as HTMLElement
-          const rect = html.getBoundingClientRect()
-          const style = window.getComputedStyle(html)
-          if (rect.width < 250 || rect.height < 150) return false
-          const isOverlay = style.position === "fixed" || style.position === "absolute" || Number(style.zIndex || 0) > 50
-          if (!isOverlay) return false
-          const centerX = rect.left + rect.width / 2
-          const centerY = rect.top + rect.height / 2
-          return (
-            Math.abs(centerX - window.innerWidth / 2) < window.innerWidth * 0.22 &&
-            Math.abs(centerY - window.innerHeight / 2) < window.innerHeight * 0.28
-          )
-        })
-        .map((node) => {
-          const html = node as HTMLElement
-          const rect = html.getBoundingClientRect()
-          const text = (node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120)
-          return `${Math.round(rect.width)}x${Math.round(rect.height)}:${text || node.tagName.toLowerCase()}`
-        })
-        .slice(0, 3)
-
-      return `url=${window.location.href} title="${(document.title || "").replace(/\s+/g, " ").trim()}" visibleButtons=${buttons.join(" | ") || "none"} containers=${containers.join(" | ") || "none"} overlays=${centeredOverlays.join(" | ") || "none"}`
-    }).catch(() => "transitionEvalError")
-    return [pageDetail, popupUrls].filter(Boolean).join(" ").trim()
-  }
-
-  private async inspectExternalApplyPages() {
-    if (!this.page) return ""
-    const pages = this.page.context().pages().filter((page) => page !== this.page)
-    const urls: string[] = []
-    for (const extraPage of pages) {
-      await extraPage.waitForLoadState("domcontentloaded", { timeout: 1200 }).catch(() => {})
-      const url = extraPage.url()
-      if (url && !url.includes("linkedin.com")) urls.push(url)
-      await extraPage.close().catch(() => {})
-    }
-    return urls.length ? `popupUrls=${urls.join(",")}` : ""
-  }
-
-  private async describeSurface() {
-    if (!this.page) return "no page"
-    return this.page.evaluate(() => {
-      const isVisible = (node: Element | null) => {
-        if (!node) return false
-        const html = node as HTMLElement
-        const rect = html.getBoundingClientRect()
-        const style = window.getComputedStyle(html)
-        return rect.width > 20 && rect.height > 20 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
-      }
-      const dialogs = Array.from(document.querySelectorAll("dialog, [role='dialog'], .artdeco-modal, .jobs-easy-apply-modal, .jobs-apply-modal")).filter((node) => isVisible(node)).length
-      const fields = Array.from(document.querySelectorAll("input, textarea, select, fieldset, [role='combobox'], input[type='file']")).filter((node) => isVisible(node)).length
-      const buttons = Array.from(document.querySelectorAll("button, input[type='submit'], input[type='button'], div[role='button'], a[role='button']")).filter((node) => isVisible(node)).length
-      return `url=${window.location.href} title="${(document.title || "").replace(/\s+/g, " ").trim()}" dialogs=${dialogs} visibleFields=${fields} visibleButtons=${buttons}`
-    }).catch(() => "")
-  }
-  private isSubmitLabel(label: string) {
-    return label.includes("submit") || label.includes("send application") || label.includes("submit application") || label.includes("envoyer") || label.includes("soumettre") || label.includes("postuler")
-  }
-
-  private async findPrimaryAction(): Promise<ActionButtonMatch | null> {
-    if (!this.page) return null
-    const modal = await this.getModalContainer()
-    const scope = modal || this.page
-    const candidates = await scope.$$("button").catch(() => [])
-
-    const actionKeywords = ["next", "continue", "review", "submit", "send application", "suivant", "continuer", "envoyer", "soumettre", "postuler"]
-    let best: { score: number; match: ActionButtonMatch } | null = null
-
-    for (const candidate of candidates) {
-      const meta = await candidate.evaluate((el) => {
-        const html = el as HTMLElement & { disabled?: boolean }
-        const rect = html.getBoundingClientRect()
-        const style = window.getComputedStyle(html)
-        const text = (html.innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().toLowerCase()
-        return {
-          text,
-          visible: rect.width > 20 && rect.height > 20 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0",
-          disabled: Boolean(html.disabled) || el.getAttribute("aria-disabled") === "true",
-          isPrimary: (el.getAttribute("class") || "").includes("artdeco-button--primary"),
-          top: rect.top,
-        }
-      }).catch(() => ({ text: "", visible: false, disabled: true, isPrimary: false, top: 0 }))
-
-      if (!meta.visible || meta.disabled || !meta.text) continue
-      const isAction = actionKeywords.some((kw) => meta.text.includes(kw))
-      if (!isAction) continue
-
-      let score = 0
-      if (meta.isPrimary) score += 4
-      if (meta.text.includes("submit") || meta.text.includes("send application") || meta.text.includes("envoyer")) score += 6
-      if (meta.text.includes("review")) score += 5
-      if (meta.text.includes("next") || meta.text.includes("continue") || meta.text.includes("suivant") || meta.text.includes("continuer")) score += 5
-      if (meta.text === "next" || meta.text === "suivant") score += 3
-      if (meta.top > 350) score += 1
-
-      const match: ActionButtonMatch = { handle: candidate, label: meta.text }
-      if (!best || score > best.score) best = { score, match }
-    }
-
-    return best?.match || null
-  }
-
-  private async safeClick(handle: { scrollIntoViewIfNeeded?: () => Promise<void>; click: (options?: { force?: boolean; timeout?: number }) => Promise<unknown>; evaluate?: <T>(fn: (el: Element) => T) => Promise<T> }) {
+    // 1. Wait up to 6s for any primary button to appear (modal renders heading first, content second)
+    const primaryLocator = this.page.locator("button.artdeco-button--primary").last()
     try {
-      if (handle.scrollIntoViewIfNeeded) await handle.scrollIntoViewIfNeeded().catch(() => {})
-      await handle.click({ timeout: 5000 })
-      return
-    } catch {}
+      await primaryLocator.waitFor({ state: "visible", timeout: 6000 })
+      const label = await primaryLocator.textContent().catch(() => "")
+      await this.log(`Clicking: ${label?.trim() || "primary button"}`)
+      await primaryLocator.click({ force: true })
+      return true
+    } catch { /* not found yet, try other strategies */ }
 
-    try {
-      await handle.click({ force: true, timeout: 3000 })
-      return
-    } catch {}
-
-    if (handle.evaluate) await handle.evaluate((el) => (el as HTMLElement).click()).catch(() => {})
-  }
-
-  private async buttonLooksLikeEasyApply(candidate: { textContent: () => Promise<string | null>; getAttribute: (name: string) => Promise<string | null> }) {
-    const combined = `${normalizeText(await candidate.textContent().catch(() => "")).toLowerCase()} ${normalizeText(await candidate.getAttribute("aria-label").catch(() => "")).toLowerCase()} ${normalizeText(await candidate.getAttribute("title").catch(() => "")).toLowerCase()}`
-    return combined.includes("easy apply") || combined.includes("continue to application")
-  }
-
-  private async findEasyApplyButton() {
-    if (!this.page) return null
-    for (const selector of ["button[aria-label*='Easy Apply']", "button.jobs-apply-button", ".jobs-apply-button--top-card", "button:has-text('Easy Apply')", "button:has-text('Continue to application')", "div[role='button']:has-text('Easy Apply')", "a:has-text('Easy Apply')"]) {
-      const button = await this.page.$(selector).catch(() => null)
-      if (button && (await this.buttonLooksLikeEasyApply(button))) return button
+    // 2. Playwright :has-text() — pierces shadow DOM, matches partial button text
+    const actionTexts = [
+      "Submit application", "Submit", "Next", "Continue to next step", "Continue",
+      "Review your application", "Review", "Send", "Envoyer", "Soumettre", "Postuler",
+    ]
+    for (const text of actionTexts) {
+      const loc = this.page.locator(`button:has-text("${text}")`).last()
+      const count = await loc.count().catch(() => 0)
+      if (count > 0) {
+        await this.log(`Clicking: ${text}`)
+        await loc.click({ force: true }).catch(() => {})
+        return true
+      }
     }
 
-    const buttons = await this.page.$$("button, a, div[role='button']").catch(() => [])
-    for (const button of buttons) {
-      const disabled = await button.evaluate((el) => {
-        const html = el as HTMLElement & { disabled?: boolean }
-        return Boolean(html.disabled) || el.getAttribute("aria-disabled") === "true"
-      }).catch(() => true)
-      if (!disabled && (await this.buttonLooksLikeEasyApply(button))) return button
-    }
-    return null
-  }
-
-  private async forceClickNextButton() {
-    if (!this.page) return false
-    const modal = await this.getModalContainer()
-    const scope = modal || this.page
-    const buttons = await scope.$$("button").catch(() => [])
-    const actionKeywords = ["next", "review", "submit", "continue", "suivant", "envoyer", "send application", "soumettre", "continuer", "postuler"]
-    for (const btn of buttons) {
-      const meta = await btn.evaluate((el) => {
-        const html = el as HTMLElement
-        const rect = html.getBoundingClientRect()
-        const style = window.getComputedStyle(html)
-        const visible = rect.width > 10 && rect.height > 10 && style.display !== "none" && style.visibility !== "hidden"
-        const text = (html.innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().toLowerCase()
-        const isPrimary = (el.getAttribute("class") || "").includes("artdeco-button--primary")
-        return { visible, text, isPrimary }
-      }).catch(() => ({ visible: false, text: "", isPrimary: false }))
-      if (!meta.visible) continue
-      if (!actionKeywords.some((kw) => meta.text.includes(kw))) continue
-      await btn.click({ force: true, timeout: 3000 }).catch(() => {})
+    // 3. getByRole with partial pattern (also pierces shadow DOM)
+    const actionPattern = /next|suivant|continue|continuer|review|submit|send|envoyer|soumettre|postuler/i
+    const byRole = this.page.getByRole("button", { name: actionPattern })
+    const roleCount = await byRole.count().catch(() => 0)
+    if (roleCount > 0) {
+      const btn = byRole.last()
+      const label = await btn.textContent().catch(() => "")
+      await this.log(`Clicking (role): ${label?.trim() || "action button"}`)
+      await btn.click({ force: true }).catch(() => {})
       return true
     }
+
+    // Diagnostic: show what Playwright CAN see (pierces shadow DOM)
+    const allVisible = await this.page.locator("button").allTextContents().catch(() => [] as string[])
+    await this.log(`No Next button. Visible buttons: ${allVisible.filter(Boolean).slice(0, 15).join(" | ")}`, "error")
     return false
   }
 
-  private async isInteractableField(field: { evaluate: <T>(pageFunction: (element: Element) => T) => Promise<T> }) {
+  // ── Form Filling ───────────────────────────────────────────────────────────
+
+  private async fillStep() {
+    await this.uploadCV()
+    await this.fillTextInputs()
+    await this.answerSelects()
+    await this.answerRadioButtons()
+    await this.answerCheckboxes()
+    await this.answerComboboxes()
+  }
+
+  private async isInteractableField(field: { evaluate: <T>(fn: (el: Element) => T) => Promise<T> }) {
     return field.evaluate((el) => {
       const html = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
       const disabled = "disabled" in html ? Boolean(html.disabled) : false
@@ -1076,10 +749,9 @@ export class LinkedInBot {
     }).catch(() => true)
   }
 
-  private async fireReactEvents(field: { evaluate: <T>(pageFunction: (element: Element) => T) => Promise<T> }) {
+  private async fireReactEvents(field: { evaluate: <T>(fn: (el: Element) => T) => Promise<T> }) {
     await field.evaluate((el) => {
       const input = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
-      // Use native setter trick so React's onChange fires for pre-filled values
       try {
         const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
         const descriptor = Object.getOwnPropertyDescriptor(proto, "value")
@@ -1091,7 +763,7 @@ export class LinkedInBot {
     }).catch(() => {})
   }
 
-  private async getFieldPrompt(field: { evaluate: <T>(pageFunction: (element: Element) => T) => Promise<T> }) {
+  private async getFieldPrompt(field: { evaluate: <T>(fn: (el: Element) => T) => Promise<T> }) {
     const prompt = await field.evaluate((el) => {
       const input = el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
       const id = input.id
@@ -1103,57 +775,49 @@ export class LinkedInBot {
   }
 
   private describeFieldLabel(label: string) {
-    const value = normalizeText(label)
-    if (!value) return "field"
-    if (value.includes("first name")) return "first name"
-    if (value.includes("last name") || value.includes("family name")) return "last name"
-    if (value.includes("full name")) return "full name"
-    if (value.includes("email")) return "email"
-    if (value.includes("phone") || value.includes("mobile")) return "phone"
-    if (value.includes("city") || value.includes("ville")) return "city"
-    if (value.includes("country") || value.includes("citizenship") || value.includes("nationality")) return "country"
-    if (value.includes("salary")) return "salary"
-    if (value.includes("notice")) return "notice period"
-    if (value.includes("experience")) return "experience"
-    if (value.includes("linkedin")) return "linkedin"
-    if (value.includes("portfolio") || value.includes("website")) return "portfolio"
-    if (value.includes("source")) return "source"
-    return value.split(" ").slice(0, 6).join(" ")
+    const v = normalizeText(label)
+    if (!v) return "field"
+    if (v.includes("first name")) return "first name"
+    if (v.includes("last name") || v.includes("family name")) return "last name"
+    if (v.includes("full name")) return "full name"
+    if (v.includes("email")) return "email"
+    if (v.includes("phone") || v.includes("mobile")) return "phone"
+    if (v.includes("city") || v.includes("ville")) return "city"
+    if (v.includes("country") || v.includes("citizenship") || v.includes("nationality")) return "country"
+    if (v.includes("salary")) return "salary"
+    if (v.includes("notice")) return "notice period"
+    if (v.includes("experience")) return "experience"
+    if (v.includes("linkedin")) return "linkedin"
+    if (v.includes("portfolio") || v.includes("website")) return "portfolio"
+    if (v.includes("source")) return "source"
+    return v.split(" ").slice(0, 6).join(" ")
   }
 
   private isProfileDrivenQuestion(label: string) {
-    const lowered = label.toLowerCase()
-    return lowered.includes("how did you hear") || lowered.includes("where did you hear") || lowered.includes("source") || lowered.includes("citizenship") || lowered.includes("based in") || lowered.includes("personal laptop") || lowered.includes("worked before") || lowered.includes("worked with our company") || lowered.includes("sanctioned territories")
+    const l = label.toLowerCase()
+    return l.includes("how did you hear") || l.includes("where did you hear") || l.includes("source") || l.includes("citizenship") || l.includes("based in") || l.includes("personal laptop") || l.includes("worked before") || l.includes("worked with our company") || l.includes("sanctioned territories")
   }
 
   private guessAnswer(label: string) {
-    const lowered = label.toLowerCase()
-    if (lowered.includes("first name") || lowered.includes("prenom") || lowered.includes("prénom")) return this.answers.firstName
-    if (lowered.includes("last name") || lowered.includes("family name") || lowered.includes("nom")) return this.answers.lastName
-    if (lowered.includes("full name")) return this.answers.fullName
-    if (lowered.includes("email")) return this.email
-    if (lowered.includes("phone") || lowered.includes("mobile") || lowered.includes("téléphone")) return this.answers.phone
-    if (lowered.includes("city") || lowered.includes("ville")) return this.answers.city
-    if (lowered.includes("country are you based in") || lowered.includes("based in")) return this.answers.baseCountry
-    if (lowered.includes("country") || lowered.includes("pays") || lowered.includes("nationality")) return this.answers.country
-    if (lowered.includes("citizenship")) return this.answers.citizenship
-    if (lowered.includes("linkedin")) return this.answers.linkedinUrl
-    if (lowered.includes("portfolio") || lowered.includes("website")) return this.answers.portfolioUrl
-    if (lowered.includes("salary") || lowered.includes("salaire") || lowered.includes("compensation")) return this.answers.salaryExpectation
-    if (lowered.includes("notice")) return this.answers.noticePeriod
-    if (lowered.includes("experience") || lowered.includes("année") || lowered.includes("year")) return this.answers.yearsExperience
-    if (lowered.includes("how did you hear") || lowered.includes("source")) return this.answers.referralSource
+    const l = label.toLowerCase()
+    if (l.includes("first name") || l.includes("prenom") || l.includes("prénom")) return this.answers.firstName
+    if (l.includes("last name") || l.includes("family name") || l.includes("nom")) return this.answers.lastName
+    if (l.includes("full name")) return this.answers.fullName
+    if (l.includes("email")) return this.email
+    if (l.includes("phone") || l.includes("mobile") || l.includes("téléphone")) return this.answers.phone
+    if (l.includes("city") || l.includes("ville")) return this.answers.city
+    if (l.includes("country are you based in") || l.includes("based in")) return this.answers.baseCountry
+    if (l.includes("country") || l.includes("pays") || l.includes("nationality")) return this.answers.country
+    if (l.includes("citizenship")) return this.answers.citizenship
+    if (l.includes("linkedin")) return this.answers.linkedinUrl
+    if (l.includes("portfolio") || l.includes("website")) return this.answers.portfolioUrl
+    if (l.includes("salary") || l.includes("salaire") || l.includes("compensation")) return this.answers.salaryExpectation
+    if (l.includes("notice")) return this.answers.noticePeriod
+    if (l.includes("experience") || l.includes("année") || l.includes("year")) return this.answers.yearsExperience
+    if (l.includes("how did you hear") || l.includes("source")) return this.answers.referralSource
     return ""
   }
 
-  private async fillTextInputWithGroq(input: { fill: (value: string) => Promise<void> }, label: string) {
-    if (!USE_GROQ_FOR_COMPLEX_FORMS || !this.applicantProfile) return false
-    const decision = await askGroqForFieldAnswer({ question: label, fieldType: "text", applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
-    if (!decision?.answer || decision.shouldPause || decision.confidence < 60) return false
-    await input.fill(decision.answer).catch(() => {})
-    await this.log(`Groq filled text field: ${decision.answer}`)
-    return true
-  }
   private async fillTextInputs() {
     if (!this.page) return
     const inputs = await this.page.$$("input[type='text']:visible, input[type='tel']:visible, input[type='number']:visible, input[type='email']:visible, textarea:visible").catch(() => [])
@@ -1162,57 +826,63 @@ export class LinkedInBot {
         if (!(await this.isInteractableField(input))) continue
         const label = await this.getFieldPrompt(input)
         const currentValue = normalizeText(await input.inputValue().catch(() => ""))
+
         if (label.includes("location") && (label.includes("city") || label.includes("ville"))) {
-          await this.fillLocationField(input, currentValue)
-          continue
+          await this.fillLocationField(input, currentValue); continue
         }
-        if (currentValue) {
-          await this.fireReactEvents(input)
-          continue
+        if (currentValue) { await this.fireReactEvents(input); continue }
+
+        const isTextarea = await input.evaluate((el) => el.tagName.toLowerCase() === "textarea").catch(() => false)
+        if (isTextarea && /cover letter|motivation|why are you|why do you want/i.test(label)) {
+          const letter = await this.generateCoverLetter()
+          await input.fill(letter).catch(() => {})
+          await this.log(`Filled cover letter`)
+          await this.fireReactEvents(input); await this.sleep(250); continue
         }
+
         const guessed = this.guessAnswer(label)
         if (guessed) {
           await input.fill(guessed).catch(() => {})
           await this.log(`Filled ${this.describeFieldLabel(label)}: ${guessed}`)
-          await this.fireReactEvents(input)
-          await this.sleep(250)
-          continue
+          await this.fireReactEvents(input); await this.sleep(250); continue
         }
-        await this.fillTextInputWithGroq(input, label)
+
+        // Groq fallback
+        if (USE_GROQ_FOR_COMPLEX_FORMS && this.applicantProfile) {
+          const decision = await askGroqForFieldAnswer({ question: label, fieldType: "text", applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
+          if (decision?.answer && !decision.shouldPause && decision.confidence >= 60) {
+            await input.fill(decision.answer).catch(() => {})
+            await this.log(`Groq filled: ${decision.answer}`)
+          }
+        }
       } catch {}
     }
   }
 
-  private async fillLocationField(input: { fill: (value: string) => Promise<void>; click: (options?: { force?: boolean; timeout?: number }) => Promise<unknown>; press?: (key: string) => Promise<void>; inputValue?: () => Promise<string> }, currentValue = "") {
-    const desiredCity = this.answers.city
-    const desiredCountry = this.answers.baseCountry || this.answers.country
-    if (currentValue.toLowerCase().includes(desiredCity.toLowerCase())) {
+  private async fillLocationField(input: any, currentValue = "") {
+    const city = this.answers.city
+    const country = this.answers.baseCountry || this.answers.country
+    if (currentValue.toLowerCase().includes(city.toLowerCase())) {
       await input.click({ force: true }).catch(() => {})
       if (this.page) await this.page.keyboard.press("Tab").catch(() => {})
       return
     }
-
-    for (const searchTerm of [`${desiredCity}, ${desiredCountry}`, desiredCity]) {
+    for (const term of [`${city}, ${country}`, city]) {
       await input.click({ force: true }).catch(() => {})
-      await input.fill(searchTerm).catch(() => {})
-      await this.log(`Typing location search: ${searchTerm}`)
+      await input.fill(term).catch(() => {})
+      await this.log(`Typing location search: ${term}`)
       await this.sleep(1100)
       if (this.page) {
         const candidates = await this.page.$$("[role='option'], .basic-typeahead__selectable, .artdeco-typeahead__result, [data-test-autocomplete-dropdown] li").catch(() => [])
-        for (const candidate of candidates) {
-          const text = normalizeText(await candidate.textContent().catch(() => "")).toLowerCase()
-          if (text && (text.includes(searchTerm.toLowerCase()) || text.includes(desiredCity.toLowerCase()))) {
-            await this.safeClick(candidate)
-            await this.sleep(350)
-            await this.log(`Selected location option: ${text}`)
-            return
+        for (const c of candidates) {
+          const text = normalizeText(await c.textContent().catch(() => "")).toLowerCase()
+          if (text && (text.includes(term.toLowerCase()) || text.includes(city.toLowerCase()))) {
+            await this.safeClick(c); await this.sleep(350)
+            await this.log(`Selected location option: ${text}`); return
           }
         }
       }
-      if (input.press) {
-        await input.press("ArrowDown").catch(() => {})
-        await input.press("Enter").catch(() => {})
-      }
+      if (input.press) { await input.press("ArrowDown").catch(() => {}); await input.press("Enter").catch(() => {}) }
     }
   }
 
@@ -1222,69 +892,69 @@ export class LinkedInBot {
     for (const select of selects) {
       try {
         if (!(await this.isInteractableField(select))) continue
-        const value = await select.inputValue().catch(() => "")
         const selectedText = normalizeText(await select.evaluate((el) => ((el as HTMLSelectElement).selectedOptions?.[0]?.textContent || "")).catch(() => ""))
-        if (value && !looksLikePlaceholderValue(selectedText)) {
-          await this.fireReactEvents(select)
-          continue
-        }
+        if (await select.inputValue().catch(() => "") && !looksLikePlaceholderValue(selectedText)) { await this.fireReactEvents(select); continue }
 
         const label = await this.getFieldPrompt(select)
-        const options = await select.$$eval("option", (nodes) => nodes.map((node) => ({ value: (node as HTMLOptionElement).value, text: node.textContent?.trim().toLowerCase() || "" }))).catch(() => [] as Array<{ value: string; text: string }>)
+        const options = await select.$$eval("option", (nodes) => nodes.map((n) => ({ value: (n as HTMLOptionElement).value, text: n.textContent?.trim().toLowerCase() || "" }))).catch(() => [] as { value: string; text: string }[])
         const guessed = this.guessAnswer(label).toLowerCase()
-        const matched = options.find((option) => guessed && (option.text.includes(guessed) || option.value.toLowerCase() === guessed))
-        if (matched?.value) {
-          await select.selectOption(matched.value).catch(() => {})
-          await this.log(`Selected ${this.describeFieldLabel(label)}: ${matched.text}`)
-          continue
-        }
+        const matched = options.find((o) => guessed && (o.text.includes(guessed) || o.value.toLowerCase() === guessed))
+        if (matched?.value) { await select.selectOption(matched.value).catch(() => {}); await this.log(`Selected ${this.describeFieldLabel(label)}: ${matched.text}`); continue }
 
         if (this.isProfileDrivenQuestion(label) && USE_GROQ_FOR_COMPLEX_FORMS && this.applicantProfile) {
-          const decision = await askGroqForFieldAnswer({ question: label, fieldType: "select", options: options.map((option) => option.text), applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
-          const groqMatch = decision?.answer ? options.find((option) => option.text.includes(decision.answer.toLowerCase())) : null
-          if (groqMatch?.value) {
-            await select.selectOption(groqMatch.value).catch(() => {})
-            await this.log(`Groq selected option: ${decision?.answer}`)
-            continue
-          }
+          const decision = await askGroqForFieldAnswer({ question: label, fieldType: "select", options: options.map((o) => o.text), applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
+          const groqMatch = decision?.answer ? options.find((o) => o.text.includes(decision.answer.toLowerCase())) : null
+          if (groqMatch?.value) { await select.selectOption(groqMatch.value).catch(() => {}); await this.log(`Groq selected: ${decision?.answer}`); continue }
         }
 
-        if (options.length > 1 && options[1]?.value) {
-          await select.selectOption(options[1].value).catch(() => {})
-          await this.log(`Selected ${this.describeFieldLabel(label)}: ${options[1].text}`)
-        }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error)
-        if (!msg.includes("Execution context was destroyed") && !msg.includes("Cannot find context with specified id")) {
-          await this.log(`Skipped stale select field: ${msg}`)
-        }
+        if (options.length > 1 && options[1]?.value) { await select.selectOption(options[1].value).catch(() => {}); await this.log(`Selected ${this.describeFieldLabel(label)}: ${options[1].text}`) }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (!msg.includes("Execution context was destroyed")) await this.log(`Skipped stale select: ${msg}`)
       }
     }
   }
 
   private async answerRadioButtons() {
     if (!this.page) return
-    const groups = await this.page.$$("fieldset:visible").catch(() => [])
-    for (const group of groups) {
+    const radios = await this.page.$$("input[type='radio']:visible").catch(() => [])
+    const processed = new Set<string>()
+    for (const radio of radios) {
       try {
-        const checked = await group.$("input[type='radio']:checked").catch(() => null)
+        const name = normalizeText(await radio.getAttribute("name").catch(() => ""))
+        const id = normalizeText(await radio.getAttribute("id").catch(() => ""))
+        const key = name || id
+        if (!key || processed.has(key)) continue
+        processed.add(key)
+
+        const checked = name ? await this.page.$(`input[type='radio'][name="${name}"]:checked`).catch(() => null) : await this.page.$(`#${id}:checked`).catch(() => null)
         if (checked) continue
-        const text = normalizeText(await group.textContent().catch(() => "")).toLowerCase()
-        const desired = text.includes("authorized") || text.includes("work permit") || text.includes("legally") ? this.answers.workAuthorization : text.includes("sponsor") ? this.answers.sponsorshipRequired : text.includes("relocat") ? this.answers.openToRelocation : text.includes("remote") ? this.answers.remotePreference : text.includes("europe") ? this.answers.livesInEurope : text.includes("laptop") || text.includes("pc") ? this.answers.hasPersonalLaptop : text.includes("worked before") ? this.answers.workedBefore : "yes"
-        const radios = await group.$$("input[type='radio']").catch(() => [])
+
+        const container = await radio.evaluateHandle((el) => el.closest("fieldset, [role='radiogroup'], [data-test-form-element], .jobs-easy-apply-form-section__grouping, .fb-dash-form-element") || el.parentElement).catch(() => null)
+        const group = container?.asElement()
+        const text = normalizeText(await group?.textContent().catch(() => "")).toLowerCase()
+        const desired = text.includes("authorized") || text.includes("work permit") || text.includes("legally") ? this.answers.workAuthorization
+          : text.includes("sponsor") ? this.answers.sponsorshipRequired
+          : text.includes("relocat") ? this.answers.openToRelocation
+          : text.includes("remote") ? this.answers.remotePreference
+          : text.includes("europe") ? this.answers.livesInEurope
+          : text.includes("laptop") || text.includes("pc") ? this.answers.hasPersonalLaptop
+          : text.includes("worked before") ? this.answers.workedBefore
+          : "yes"
+
+        const groupRadios = name ? await this.page!.$$(`input[type='radio'][name="${name}"]`).catch(() => []) : group ? await group.$$("input[type='radio']").catch(() => []) : [radio]
         let selected = false
-        for (const radio of radios) {
-          const value = normalizeText(await radio.getAttribute("value").catch(() => "")).toLowerCase()
-          const id = await radio.getAttribute("id")
-          const labelEl = id ? await group.$(`label[for="${id}"]`).catch(() => null) : null
+        for (const option of groupRadios) {
+          const value = normalizeText(await option.getAttribute("value").catch(() => "")).toLowerCase()
+          const optionId = await option.getAttribute("id")
+          const labelEl = optionId ? await this.page!.$(`label[for="${optionId}"]`).catch(() => null) : null
           const labelText = normalizeText(await labelEl?.textContent().catch(() => "")).toLowerCase()
           if (value === desired || labelText === desired || labelText.includes(` ${desired}`) || labelText.startsWith(`${desired} `)) {
-            await radio.check().catch(() => {})
-            selected = true
-            break
+            await option.check().catch(() => {}); selected = true; break
           }
         }
-        if (!selected && radios[0]) await radios[0].check().catch(() => {})
+        if (!selected && groupRadios[0]) await groupRadios[0].check().catch(() => {})
+        await container?.dispose().catch(() => {})
       } catch {}
     }
   }
@@ -1315,21 +985,22 @@ export class LinkedInBot {
         if (!(await this.isInteractableField(combobox))) continue
         const label = await this.getFieldPrompt(combobox)
         const currentValue = normalizeText(await combobox.evaluate((el) => el instanceof HTMLInputElement ? el.value || "" : (el.textContent || el.getAttribute("title") || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim()).catch(() => ""))
-        const lowered = label.toLowerCase()
+        const l = label.toLowerCase()
+
         if (currentValue && !looksLikePlaceholderValue(currentValue)) {
           await combobox.click({ force: true }).catch(() => {})
           if (this.page) await this.page.keyboard.press("Escape").catch(() => {})
           continue
         }
-        if (lowered.includes("phone country code") || lowered.includes("country code")) {
+        if (l.includes("phone country code") || l.includes("country code")) {
           await this.selectComboboxOption(combobox, [`${this.answers.country} (${normalizeText(this.answers.phone).match(/\+\d{1,4}/)?.[0] || "+216"})`, this.answers.country, "+216"])
           continue
         }
-        if (lowered.includes("country") || lowered.includes("pays") || lowered.includes("nationality") || lowered.includes("citizenship")) {
+        if (l.includes("country") || l.includes("pays") || l.includes("nationality") || l.includes("citizenship")) {
           await this.selectComboboxOption(combobox, [this.answers.citizenship, this.answers.country, `${this.answers.city}, ${this.answers.country}`])
           continue
         }
-        if (lowered.includes("source") || lowered.includes("how did you hear")) {
+        if (l.includes("source") || l.includes("how did you hear")) {
           await this.selectComboboxOption(combobox, [this.answers.referralSource, "LinkedIn"])
           continue
         }
@@ -1340,31 +1011,24 @@ export class LinkedInBot {
     }
   }
 
-  private async selectComboboxOption(combobox: { click: (options?: { force?: boolean; timeout?: number }) => Promise<unknown>; fill?: (value: string) => Promise<void>; press?: (key: string) => Promise<void>; evaluate: <T>(pageFunction: (element: Element) => T) => Promise<T>; inputValue?: () => Promise<string> }, desiredOptions: string[]) {
+  private async selectComboboxOption(combobox: any, desiredOptions: string[]) {
     if (!this.page) return null
     for (const desired of desiredOptions.filter(Boolean)) {
       await combobox.click({ force: true }).catch(() => {})
       await this.sleep(250)
-      const isInput = await combobox.evaluate((el) => el instanceof HTMLInputElement).catch(() => false)
+      const isInput = await combobox.evaluate((el: Element) => el instanceof HTMLInputElement).catch(() => false)
       if (isInput && combobox.fill) await combobox.fill(desired).catch(() => {})
-      else {
-        await this.page.keyboard.press("Control+A").catch(() => {})
-        await this.page.keyboard.type(desired, { delay: 25 }).catch(() => {})
-      }
+      else { await this.page.keyboard.press("Control+A").catch(() => {}); await this.page.keyboard.type(desired, { delay: 25 }).catch(() => {}) }
       await this.sleep(700)
       const options = await this.page.$$("[role='option'], div[role='option'], li, .basic-typeahead__selectable, .artdeco-typeahead__result").catch(() => [])
       for (const option of options) {
         const text = normalizeText(await option.textContent().catch(() => "")).toLowerCase()
         if (text && (text === desired.toLowerCase() || text.includes(desired.toLowerCase()))) {
-          await this.safeClick(option)
-          await this.sleep(350)
+          await this.safeClick(option); await this.sleep(350)
           return normalizeText(await option.textContent().catch(() => ""))
         }
       }
-      if (combobox.press) {
-        await combobox.press("ArrowDown").catch(() => {})
-        await combobox.press("Enter").catch(() => {})
-      }
+      if (combobox.press) { await combobox.press("ArrowDown").catch(() => {}); await combobox.press("Enter").catch(() => {}) }
       await this.sleep(350)
       const value = combobox.inputValue ? normalizeText(await combobox.inputValue().catch(() => "")) : ""
       if (value) return value
@@ -1372,56 +1036,64 @@ export class LinkedInBot {
     return null
   }
 
-  private async answerComboboxWithGroq(combobox: { click: (options?: { force?: boolean; timeout?: number }) => Promise<unknown>; fill?: (value: string) => Promise<void>; press?: (key: string) => Promise<void>; evaluate: <T>(pageFunction: (element: Element) => T) => Promise<T>; inputValue?: () => Promise<string> }, label: string) {
+  private async answerComboboxWithGroq(combobox: any, label: string) {
     if (!this.page || !USE_GROQ_FOR_COMPLEX_FORMS || !this.applicantProfile) return null
     await combobox.click({ force: true }).catch(() => {})
     await this.sleep(350)
-    const options = await this.page.$$eval("[role='option'], div[role='option'], li, .basic-typeahead__selectable, .artdeco-typeahead__result", (nodes) => nodes.map((node) => node.textContent?.replace(/\s+/g, " ").trim() || "").filter(Boolean).slice(0, 20)).catch(() => [] as string[])
+    const options = await this.page.$$eval("[role='option'], div[role='option'], li, .basic-typeahead__selectable, .artdeco-typeahead__result", (nodes) => nodes.map((n) => n.textContent?.replace(/\s+/g, " ").trim() || "").filter(Boolean).slice(0, 20)).catch(() => [] as string[])
     if (!options.length) return null
     const decision = await askGroqForFieldAnswer({ question: label, fieldType: "select", options, applicant: this.applicantProfile, job: this.currentJobContext }).catch(() => null)
     if (!decision?.answer || decision.shouldPause || decision.confidence < 65) return null
-    const selected = await this.selectComboboxOption(combobox, [decision.answer, ...options.filter((option) => option.toLowerCase().includes(decision.answer.toLowerCase())).slice(0, 3)])
-    if (selected) await this.log(`Groq selected option: ${decision.answer}`)
+    const selected = await this.selectComboboxOption(combobox, [decision.answer, ...options.filter((o) => o.toLowerCase().includes(decision.answer.toLowerCase())).slice(0, 3)])
+    if (selected) await this.log(`Groq selected: ${decision.answer}`)
     return selected
   }
+
   private async uploadCV() {
     if (!this.page) return false
-    const modal = await this.getModalContainer()
-    const fileInputs = modal ? await modal.$$("input[type='file']").catch(() => []) : await this.page.$$("input[type='file']").catch(() => [])
+    const fileInputs = await this.page.$$("input[type='file']").catch(() => [])
     for (const fileInput of fileInputs) {
       const visible = await fileInput.evaluate((el) => {
-        const html = el as HTMLElement
-        const rect = html.getBoundingClientRect()
-        const style = window.getComputedStyle(html)
-        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"
+        const r = el.getBoundingClientRect()
+        const s = window.getComputedStyle(el as HTMLElement)
+        return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden"
       }).catch(() => false)
       if (!visible) continue
       const existing = await fileInput.evaluate((el) => (el as HTMLInputElement).files?.length || 0).catch(() => 0)
-      if (existing > 0) {
-        await this.log("CV already attached")
-        return true
-      }
+      if (existing > 0) { await this.log("CV already attached"); return true }
       const context = await fileInput.evaluate((el) => {
         const wrapper = el.closest("[data-test-form-element], .jobs-easy-apply-form-section__grouping, .fb-dash-form-element") || el.parentElement
         return (wrapper?.textContent || "").replace(/\s+/g, " ").trim().toLowerCase()
       }).catch(() => "")
       if (context && !context.includes("resume") && !context.includes("cv") && !context.includes("curriculum")) continue
       await fileInput.setInputFiles(path.resolve(this.cvPath)).catch(() => {})
-      await this.log("CV uploaded")
-      await this.sleep(800)
-      return true
+      await this.log("CV uploaded"); await this.sleep(800); return true
     }
     return false
   }
 
-  private async getVisibleInlineError() {
+  private async generateCoverLetter() {
+    const generated = await generateFrenchCoverLetter({ applicant: this.applicantProfile || {}, job: this.currentJobContext }).catch(() => null)
+    return String(generated || "").trim() || fallbackCoverLetter(this.applicantProfile, this.currentJobContext)
+  }
+
+  // ── State Checks ───────────────────────────────────────────────────────────
+
+  private async wasSubmitted() {
+    if (!this.page) return false
+    const body = await this.page.evaluate(() => document.body?.innerText?.replace(/\s+/g, " ").trim().toLowerCase() || "").catch(() => "")
+    if (body.includes("application submitted") || body.includes("your application was sent") || body.includes("application sent") || body.includes("candidature envoy")) return true
+    return Boolean(await this.page.$("[aria-label*='Applied'], button:has-text('Applied'), .jobs-s-apply__application-link").catch(() => null))
+  }
+
+  private async getInlineError() {
     if (!this.page) return ""
     return this.page.evaluate(() => {
       for (const node of Array.from(document.querySelectorAll(".artdeco-inline-feedback--error"))) {
         const el = node as HTMLElement
-        const rect = el.getBoundingClientRect()
-        const style = window.getComputedStyle(el)
-        if (rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden") {
+        const r = el.getBoundingClientRect()
+        const s = window.getComputedStyle(el)
+        if (r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden") {
           const text = el.textContent?.replace(/\s+/g, " ").trim() || ""
           if (text) return text
         }
@@ -1430,106 +1102,18 @@ export class LinkedInBot {
     }).catch(() => "")
   }
 
-  private async getBlockingQuestions(): Promise<string[]> {
-    if (!this.page) return []
-    return this.page.evaluate(() => {
-      const unresolved = new Set<string>()
-      for (const node of Array.from(document.querySelectorAll(".artdeco-inline-feedback--error"))) {
-        const text = node.textContent?.replace(/\s+/g, " ").trim()
-        if (text) unresolved.add(text)
-      }
-      for (const field of Array.from(document.querySelectorAll("input[required], textarea[required], select[required]"))) {
-        const input = field as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
-        const value = "value" in input ? input.value : ""
-        if (value?.trim()) continue
-        const id = input.id
-        const label = id ? document.querySelector(`label[for="${id}"]`) : null
-        unresolved.add(label?.textContent?.replace(/\s+/g, " ").trim() || input.getAttribute("placeholder") || "required field")
-      }
-      return Array.from(unresolved).slice(0, 4)
-    }).catch(() => [])
-  }
-
-  private async isSimpleContactStepComplete() {
-    if (!this.page) return false
-    return this.page.evaluate(() => {
-      const modal = document.querySelector("dialog[open], .jobs-easy-apply-modal, [role='dialog']")
-      if (!modal) return false
-      const text = modal.textContent?.replace(/\s+/g, " ").trim().toLowerCase() || ""
-      if (!(text.includes("email address") && text.includes("mobile phone number"))) return false
-      const emailInput = modal.querySelector("input[type='email']") as HTMLInputElement | null
-      const phoneInput = modal.querySelector("input[type='tel']") as HTMLInputElement | null
-      return Boolean(emailInput?.value?.trim() && phoneInput?.value?.trim())
-    }).catch(() => false)
-  }
-
-  private async hasCoverLetterRequirement() {
-    if (!this.page) return false
-    return this.page.evaluate(() => {
-      const modal = document.querySelector("dialog[open], .jobs-easy-apply-modal, [role='dialog']")
-      if (!modal) return false
-      const text = modal.textContent?.replace(/\s+/g, " ").trim().toLowerCase() || ""
-      if (!text.includes("cover letter")) return false
-      return modal.querySelectorAll("textarea, input[type='file']").length > 1 || modal.querySelectorAll("textarea").length > 0
-    }).catch(() => false)
-  }
-
-  private async dismissApplicationModal() {
+  private async dismissModal() {
     if (!this.page) return
-    const closeButton = await this.page.$("button[aria-label='Dismiss'], button[aria-label='Close']").catch(() => null)
-    if (closeButton) {
-      await this.safeClick(closeButton)
-      await this.sleep(400)
-    }
-    const discardButton = await this.page.$("button:has-text('Discard'), button:has-text('Exit'), button:has-text('Cancel')").catch(() => null)
-    if (discardButton) {
-      await this.safeClick(discardButton)
-      await this.sleep(400)
-    }
+    const close = await this.page.$("button[aria-label='Dismiss'], button[aria-label='Close']").catch(() => null)
+    if (close) { await this.safeClick(close); await this.sleep(400) }
+    const discard = await this.page.$("button:has-text('Discard'), button:has-text('Exit'), button:has-text('Cancel')").catch(() => null)
+    if (discard) { await this.safeClick(discard); await this.sleep(400) }
   }
 
-  private async pauseForManualReview() {
-    process.stdout.write("   Press Enter to continue...")
-    await new Promise<void>((resolve) => {
-      process.stdin.resume()
-      process.stdin.once("data", () => resolve())
-    })
-    process.stdout.write("\n")
-  }
-
-  private async scrollJobList() {
-    if (!this.page) return
-    const list = await this.page.$(".jobs-search__results-list, .scaffold-layout__list").catch(() => null)
-    if (!list) return
-    for (let i = 0; i < 3; i++) {
-      await list.evaluate((el) => el.scrollBy(0, 600)).catch(() => {})
-      await this.sleep(800)
-    }
-  }
-
-  private async getJobDetailsFromPage(): Promise<Pick<LinkedInJob, "title" | "company" | "location">> {
-    if (!this.page) return { title: "", company: "", location: "" }
-    return this.page.evaluate(() => {
-      const read = (selectors: string[]) => {
-        for (const selector of selectors) {
-          const text = (document.querySelector(selector)?.textContent || "").replace(/\s+/g, " ").trim()
-          if (text) return text
-        }
-        return ""
-      }
-      return {
-        title: read([".job-details-jobs-unified-top-card__job-title h1", ".t-24.job-details-jobs-unified-top-card__job-title", ".jobs-unified-top-card__job-title h1"]),
-        company: read([".job-details-jobs-unified-top-card__company-name a", ".job-details-jobs-unified-top-card__company-name", ".jobs-unified-top-card__company-name a", ".jobs-unified-top-card__company-name"]),
-        location: read([".job-details-jobs-unified-top-card__primary-description-container", ".jobs-unified-top-card__subtitle-primary-grouping"]),
-      }
-    }).catch(() => ({ title: "", company: "", location: "" }))
-  }
+  // ── Main Run ───────────────────────────────────────────────────────────────
 
   async close() {
-    if (this.browser) {
-      await this.browser.close()
-      this.browser = null
-    }
+    if (this.browser) { await this.browser.close(); this.browser = null }
   }
 
   async run(email: string, password: string): Promise<ApplyResult[]> {
@@ -1538,28 +1122,18 @@ export class LinkedInBot {
     try {
       await this.launch()
       const loggedIn = await this.login()
-      if (!loggedIn) {
-        await this.log("Could not log in. Stopping", "error")
-        return []
-      }
+      if (!loggedIn) { await this.log("Could not log in. Stopping", "error"); return [] }
       await this.prepareSearchStrategy()
 
       let totalApplied = 0
       for (const title of this.searchTitles) {
         if (await this.isStopRequested()) break
         for (const location of this.searchLocations) {
-          if (await this.isStopRequested()) break
-          if (totalApplied >= MAX_APPLIES_PER_RUN) break
-
+          if (await this.isStopRequested() || totalApplied >= MAX_APPLIES_PER_RUN) break
           const jobs = await this.searchJobs(title, location)
           for (const job of jobs) {
-            if (await this.isStopRequested()) break
-            if (totalApplied >= MAX_APPLIES_PER_RUN) break
-            if (!job.isEasyApply) {
-              await this.log("Skipping (not Easy Apply from list)", "skipped")
-              continue
-            }
-
+            if (await this.isStopRequested() || totalApplied >= MAX_APPLIES_PER_RUN) break
+            if (!job.isEasyApply) { await this.log("Skipping (not Easy Apply)", "skipped"); continue }
             const result = await this.applyToJob(job)
             this.results.push(result)
             if (this.onResult) await this.onResult(result)
@@ -1570,9 +1144,9 @@ export class LinkedInBot {
       }
 
       await this.log("Run complete", "done")
-      await this.log(`Applied: ${this.results.filter((item) => item.status === "applied").length}`, "done")
-      await this.log(`Skipped: ${this.results.filter((item) => item.status === "skipped").length}`, "done")
-      await this.log(`Failed: ${this.results.filter((item) => item.status === "failed").length}`, "done")
+      await this.log(`Applied: ${this.results.filter((r) => r.status === "applied").length}`, "done")
+      await this.log(`Skipped: ${this.results.filter((r) => r.status === "skipped").length}`, "done")
+      await this.log(`Failed: ${this.results.filter((r) => r.status === "failed").length}`, "done")
       return this.results
     } finally {
       await this.close()
