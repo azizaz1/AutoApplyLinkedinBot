@@ -491,6 +491,12 @@ export default function DashboardPage() {
                   >
                     Statistics
                   </a>
+                  <a
+                    href="/schedule"
+                    className="rounded-full border border-[#ddd2c2] bg-white px-3 py-1 text-xs font-medium text-[#81573d] transition-colors hover:bg-[#f6efe5]"
+                  >
+                    Scheduler
+                  </a>
                 </div>
               </div>
 

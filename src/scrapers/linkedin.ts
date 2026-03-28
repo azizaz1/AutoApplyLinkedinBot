@@ -511,14 +511,11 @@ export class LinkedInBot {
     try {
       if (!(await this.ensureVerificationCleared())) return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
 
-      // Use the split-view URL — LinkedIn renders Easy Apply button more reliably here
-      // than on the standalone /jobs/view/ page
-      const jobUrl = `https://www.linkedin.com/jobs/search/?currentJobId=${job.id}&f_AL=true`
+      const jobUrl = `https://www.linkedin.com/jobs/view/${job.id}/`
       await this.page.goto(jobUrl, { waitUntil: "domcontentloaded", timeout: 60000 })
       await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {})
-      await this.sleep(2000)
-      // Scroll to top to ensure buttons are visible
       await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {})
+      await this.sleep(2000)
       if (!(await this.ensureVerificationCleared())) return { jobId: job.id, title: job.title, company: job.company, status: "failed", reason: "LinkedIn verification required" }
 
       const details = await this.page.evaluate(() => {
@@ -632,70 +629,59 @@ export class LinkedInBot {
     if (!this.page) return false
     this.modalPage = null
 
-    // ── Find the Easy Apply button ──────────────────────────────────────────
-    // Includes both English ("Easy Apply") and French ("Postuler") variants
-    const BTN_SELECTOR = [
-      "button[data-control-name='jobdetails_topcard_inapply']",
-      ".jobs-apply-button--top-card button",          // button inside the apply container
-      ".jobs-s-apply button.artdeco-button--primary",  // primary button inside apply section
-      ".jobs-s-apply button",                          // any button inside apply section
-      "button:has-text('Easy Apply')",
-      "button:has-text('Postuler facilement')",
-      "button:has-text('Candidature simplifiée')",
-      "button[aria-label*='Easy Apply' i]",
-      "button[aria-label*='Postuler' i]",
-      "button[aria-label*='Apply' i]:not([aria-label*='Applied' i])",
+    // ── Step 1: Wait for the job apply container ────────────────────────────
+    // These containers hold the Easy Apply button in LinkedIn's job detail page.
+    // Waiting for the container (not the button) avoids false positives from
+    // filter buttons or nav elements that also contain "apply" text.
+    const APPLY_CONTAINER = [
+      ".jobs-s-apply",
+      ".jobs-apply-button--top-card",
+      ".job-details-jobs-unified-top-card__apply-button",
+      ".jobs-unified-top-card__apply-button",
+      "[data-job-id] .jobs-apply-button",
     ].join(", ")
 
-    // Helper: checks the full DOM (including hidden elements) for any apply button
-    const findApplyBtnInDOM = () => this.page!.evaluate(() => {
-      const keywords = ["easy apply", "postuler facilement", "candidature simplifiée"]
-      const btns = Array.from(document.querySelectorAll("button"))
-      return btns.some(b => {
-        const text = b.textContent?.toLowerCase() || ""
-        const label = b.getAttribute("aria-label")?.toLowerCase() || ""
-        return keywords.some(k => text.includes(k) || label.includes(k))
-      })
-    }).catch(() => false)
+    const containerFound = await this.page.waitForSelector(APPLY_CONTAINER, { state: "visible", timeout: 10000 })
+      .then(() => true).catch(() => false)
 
-    let buttonFound = false
-    try {
-      await this.page.waitForSelector(BTN_SELECTOR, { state: "visible", timeout: 10000 })
-      buttonFound = true
-    } catch {
-      buttonFound = await findApplyBtnInDOM()
-    }
-
-    if (!buttonFound) {
-      // Log the full page text to help diagnose — check if "apply" keyword appears at all
+    if (!containerFound) {
+      // Container not found — dump page state to help diagnose
       const pageText = await this.page.evaluate(() => document.body?.innerText?.toLowerCase() || "").catch(() => "")
-      const hasApplyText = pageText.includes("easy apply") || pageText.includes("postuler") || pageText.includes("apply")
+      const hasApplyText = pageText.includes("easy apply") || pageText.includes("postuler")
       const visibleBtns = await this.page.locator("button:visible").allTextContents().catch(() => [] as string[])
       await this.log(
-        `Easy Apply button not found.${hasApplyText ? " (page contains apply text — button may be off-screen)" : ""} Visible buttons: ${visibleBtns.filter(Boolean).slice(0, 12).join(" | ")}`,
+        `Easy Apply button not found.${hasApplyText ? " (page contains apply text — container may use different class)" : " (no apply text on page — job may not support Easy Apply)"} Visible buttons: ${visibleBtns.filter(Boolean).slice(0, 12).join(" | ")}`,
         "error"
       )
       return false
     }
 
-    await this.log("Easy Apply button found — clicking...")
+    // ── Step 2: Find the button INSIDE the apply container ──────────────────
+    // Scoping to the container prevents clicking filter buttons or nav elements.
+    // Includes English and French variants.
+    const BTN_SELECTOR = [
+      `${APPLY_CONTAINER} button.artdeco-button--primary`,
+      `${APPLY_CONTAINER} button:has-text('Easy Apply')`,
+      `${APPLY_CONTAINER} button:has-text('Postuler facilement')`,
+      `${APPLY_CONTAINER} button:has-text('Postuler')`,
+      `${APPLY_CONTAINER} button[aria-label*='Easy Apply' i]`,
+      `${APPLY_CONTAINER} button[aria-label*='Postuler' i]`,
+      `${APPLY_CONTAINER} button`,
+    ].join(", ")
+
+    await this.log("Easy Apply container found — clicking button...")
 
     // ── Listen for popup BEFORE clicking ───────────────────────────────────
     const popupPromise = this.page.waitForEvent("popup", { timeout: 5000 }).catch(() => null)
 
-    // JS click helper — also handles French button text
-    const jsClick = () => this.page!.evaluate(() => {
-      const keywords = ["easy apply", "postuler facilement", "candidature simplifiée", "postuler"]
-      const btns = Array.from(document.querySelectorAll("button"))
-      const applyBtn = btns.find(b => {
-        const text = b.textContent?.toLowerCase() || ""
-        const label = b.getAttribute("aria-label")?.toLowerCase() || ""
-        return keywords.some(k => text.includes(k) || label.includes(k))
-      })
-      if (applyBtn) (applyBtn as HTMLElement).click()
-    }).catch(() => {})
+    // JS click scoped to the container — most reliable approach
+    const jsClick = () => this.page!.evaluate((containerSel: string) => {
+      const container = document.querySelector(containerSel)
+      if (!container) return
+      const btn = container.querySelector("button.artdeco-button--primary, button") as HTMLElement | null
+      if (btn) btn.click()
+    }, APPLY_CONTAINER).catch(() => {})
 
-    // Click the button (Playwright click first, JS fallback)
     const btn = this.page.locator(BTN_SELECTOR).first()
     await btn.click({ force: true }).catch(() => jsClick())
 

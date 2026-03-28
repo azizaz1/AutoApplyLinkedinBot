@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
@@ -12,12 +12,14 @@
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "worker": "tsx src/worker/index.ts",
-"linkedin": "tsx src/scripts/linkedin-run.ts"
+    "linkedin": "tsx src/scripts/linkedin-run.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.4.1",
     "@google/generative-ai": "^0.15.0",
     "@prisma/client": "^5.14.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^7.0.11",
     "axios": "^1.7.2",
     "bullmq": "^5.8.0",
     "clsx": "^2.1.1",
@@ -26,6 +28,8 @@
     "lucide-react": "^0.383.0",
     "next": "14.2.4",
     "next-auth": "^5.0.0-beta.19",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^8.0.4",
     "openai": "^6.32.0",
     "pdf-parse": "^1.1.1",
     "playwright": "^1.44.0",

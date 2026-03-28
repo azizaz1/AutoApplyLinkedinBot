@@ -1,4 +1,4 @@
-import crypto from "crypto"
+import crypto from "node:crypto"
 
 const ALGORITHM = "aes-256-gcm"
 const KEY = Buffer.from(process.env.ENCRYPTION_KEY || "0".repeat(64), "hex")
