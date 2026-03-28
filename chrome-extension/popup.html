@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoApply</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; width: 380px; background: #f8f4ee; color: #1f2a24; }
+
+    .header { background: #1f2a24; color: #f8f3ea; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; }
+    .header-title { font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+    .header-sub { font-size: 11px; color: #a0bfb4; margin-top: 2px; }
+    .status-badge { font-size: 10px; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
+    .status-badge.idle { background: rgba(255,255,255,0.1); color: #d8d1c4; }
+    .status-badge.running { background: #346959; color: #fff; }
+
+    .tabs { display: flex; border-bottom: 1px solid #e5ddd0; background: #f0ebe3; }
+    .tab { flex: 1; padding: 9px; font-size: 12px; font-weight: 600; text-align: center; cursor: pointer; color: #7c6f60; border: none; background: none; transition: all 0.15s; }
+    .tab.active { color: #1f2a24; background: #f8f4ee; border-bottom: 2px solid #346959; }
+
+    .pane { padding: 14px 14px 12px; display: none; }
+    .pane.active { display: block; }
+
+    /* Run tab */
+    .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+    .count-card { background: #fff; border-radius: 12px; padding: 10px 8px; text-align: center; border: 1px solid #e8e0d4; }
+    .count-num { font-size: 22px; font-weight: 700; line-height: 1; }
+    .count-num.applied { color: #346959; }
+    .count-num.skipped { color: #c97d2e; }
+    .count-num.failed { color: #c0392b; }
+    .count-label { font-size: 10px; color: #7c6f60; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.1em; }
+
+    .btn-start { width: 100%; padding: 11px; border: none; border-radius: 99px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.15s; }
+    .btn-start.idle { background: #346959; color: #fff; }
+    .btn-start.idle:hover { background: #2a5448; }
+    .btn-start.running { background: #c0392b; color: #fff; }
+    .btn-start.running:hover { background: #a93226; }
+
+    .log-box { margin-top: 10px; background: #1f2a24; border-radius: 12px; padding: 10px; height: 160px; overflow-y: auto; font-size: 11px; font-family: monospace; }
+    .log-entry { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .log-entry .time { color: #556; margin-right: 6px; }
+    .log-entry.applied .msg { color: #6dd49e; }
+    .log-entry.error .msg { color: #f1948a; }
+    .log-entry.skipped .msg { color: #f0b27a; }
+    .log-entry.info .msg { color: #d0d0d0; }
+
+    /* Settings tab */
+    .field { margin-bottom: 10px; }
+    .field label { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: #7c6f60; margin-bottom: 4px; }
+    .field input { width: 100%; padding: 8px 10px; border: 1px solid #ddd2c2; border-radius: 10px; font-size: 13px; background: #fff; color: #1f2a24; outline: none; }
+    .field input:focus { border-color: #346959; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+    .btn-save { width: 100%; padding: 9px; border: none; border-radius: 99px; font-size: 13px; font-weight: 700; cursor: pointer; background: #1f2a24; color: #fff; margin-top: 4px; }
+    .btn-save:hover { background: #2d3e35; }
+
+    .hint { font-size: 11px; color: #9a8e82; margin-top: 6px; line-height: 1.5; padding: 8px 10px; background: #f0ebe3; border-radius: 8px; }
+    .hint a { color: #346959; text-decoration: none; }
+    .hint a:hover { text-decoration: underline; }
+
+    .saved-msg { text-align: center; font-size: 12px; color: #346959; font-weight: 600; margin-top: 6px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="header-title">AutoApply</div>
+      <div class="header-sub">LinkedIn Easy Apply bot</div>
+    </div>
+    <span class="status-badge idle" id="statusBadge">Idle</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="run">Run</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </div>
+
+  <div class="pane active" id="pane-run">
+    <div class="counts">
+      <div class="count-card">
+        <div class="count-num applied" id="cntApplied">0</div>
+        <div class="count-label">Applied</div>
+      </div>
+      <div class="count-card">
+        <div class="count-num skipped" id="cntSkipped">0</div>
+        <div class="count-label">Skipped</div>
+      </div>
+      <div class="count-card">
+        <div class="count-num failed" id="cntFailed">0</div>
+        <div class="count-label">Failed</div>
+      </div>
+    </div>
+    <button class="btn-start idle" id="btnStart">Start Auto-Apply</button>
+    <div class="log-box" id="logBox">
+      <div class="log-entry info"><span class="msg">Waiting to start...</span></div>
+    </div>
+  </div>
+
+  <div class="pane" id="pane-settings">
+    <div class="field">
+      <label>App URL</label>
+      <input id="appUrl" type="text" placeholder="http://localhost:3000" />
+    </div>
+    <div class="field">
+      <label>Extension Secret</label>
+      <input id="secret" type="password" placeholder="From your app .env" />
+    </div>
+    <div class="field">
+      <label>Search Query</label>
+      <input id="searchQuery" type="text" placeholder="Software Engineer (leave blank = use profile)" />
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Max Jobs</label>
+        <input id="maxJobs" type="number" value="20" min="1" max="100" />
+      </div>
+      <div class="field">
+        <label>Phone</label>
+        <input id="phone" type="text" placeholder="+216 00 000 000" />
+      </div>
+    </div>
+    <div class="field">
+      <label>LinkedIn URL</label>
+      <input id="linkedinUrl" type="text" placeholder="https://linkedin.com/in/you" />
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>City</label>
+        <input id="city" type="text" placeholder="Tunis" />
+      </div>
+      <div class="field">
+        <label>Country</label>
+        <input id="country" type="text" placeholder="Tunisia" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Salary Expectation</label>
+      <input id="salary" type="text" placeholder="2000" />
+    </div>
+    <button class="btn-save" id="btnSave">Save Settings</button>
+    <div class="saved-msg" id="savedMsg">Settings saved!</div>
+    <div class="hint">
+      Get the Extension Secret from your app's <a href="#" id="openSettings">.env</a> file — it's the value of <strong>EXTENSION_SECRET</strong>.
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

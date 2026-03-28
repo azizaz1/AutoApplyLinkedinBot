@@ -382,8 +382,17 @@ export default function SettingsPage() {
                 enabled={form.linkedinEnabled}
                 onToggle={() => setField("linkedinEnabled", !form.linkedinEnabled)}
               >
-                <Field label="Email" name="linkedinEmail" type="email" value={form.linkedinEmail} onChange={setField} />
-                <Field label="Password" name="linkedinPassword" type="password" value={form.linkedinPassword} onChange={setField} />
+                <div className="rounded-2xl border border-[#dce9f8] bg-[#f0f6fc] p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#27558a]">Using Chrome Extension</p>
+                  <p className="mt-1.5 text-sm leading-5 text-[#3a5a7a]">
+                    LinkedIn is now automated via the Chrome Extension — no credentials needed here. The extension runs in your browser and reads your profile from this app directly.
+                  </p>
+                  <a href="/dashboard" className="mt-3 inline-flex rounded-full bg-[#27558a] px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90">
+                    Extension setup guide →
+                  </a>
+                </div>
+                <Field label="Email (legacy / unused)" name="linkedinEmail" type="email" value={form.linkedinEmail} onChange={setField} />
+                <Field label="Password (legacy / unused)" name="linkedinPassword" type="password" value={form.linkedinPassword} onChange={setField} />
               </PlatformCard>
 
               <PlatformCard
@@ -471,7 +480,7 @@ export default function SettingsPage() {
                 <p className="text-xs uppercase tracking-[0.18em] text-[#7c6f60]">Applicant Answers</p>
                 <h2 className="mt-2 text-xl font-semibold text-[#1f2a24]">Common form answers</h2>
                 <p className="mt-2 text-sm leading-6 text-[#6b6257]">
-                  Fill the answers you want Groq and the bot to use when forms ask common questions. Already-filled form fields are left alone.
+                  Fill the answers you want Groq and the bot to use when forms ask common questions. Already-filled form fields are left alone. <strong className="text-[#1f2a24]">The Chrome Extension also reads these values</strong> — keep them up to date.
                 </p>
 
                 <div className="mt-5 grid gap-4 md:grid-cols-2">

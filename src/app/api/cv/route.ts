@@ -84,6 +84,36 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  const session = await auth()
+  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+  const body = await req.json()
+  const { fullName, currentTitle, summary, yearsExperience, skills, languages, education, experience } = body
+
+  const profile = await prisma.profile.upsert({
+    where: { userId: session.user.id },
+    create: {
+      userId: session.user.id,
+      fullName, currentTitle, summary, yearsExperience,
+      skills: skills || [],
+      languages: languages || [],
+      education: education || [],
+      experience: experience || [],
+      cvParsedAt: new Date(),
+    },
+    update: {
+      fullName, currentTitle, summary, yearsExperience,
+      skills: skills || [],
+      languages: languages || [],
+      education: education || [],
+      experience: experience || [],
+    },
+  })
+
+  return NextResponse.json({ success: true, profile })
+}
+
 export async function GET() {
   const session = await auth()
   if (!session?.user?.id) {
