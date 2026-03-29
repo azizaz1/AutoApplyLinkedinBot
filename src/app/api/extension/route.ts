@@ -58,16 +58,25 @@ export async function POST(req: NextRequest) {
   if (!checkSecret(req)) return unauthorized()
 
   const body = await req.json()
-  const { jobId, title, company, url, status } = body
+  const { jobId, title, company, url, status, userId: bodyUserId } = body
 
   if (!jobId || !title || !company) {
     return NextResponse.json({ error: "jobId, title, company required" }, { status: 400, headers: corsHeaders() })
   }
 
-  // Find the user (single-user: same as GET)
-  const profile = await prisma.profile.findFirst({
-    select: { userId: true, desiredLocation: true },
-  })
+  // Use userId from request body if provided, otherwise fall back to first profile
+  let profile: { userId: string; desiredLocation: string | null } | null = null
+  if (bodyUserId) {
+    profile = await prisma.profile.findUnique({
+      where: { userId: bodyUserId },
+      select: { userId: true, desiredLocation: true },
+    })
+  }
+  if (!profile) {
+    profile = await prisma.profile.findFirst({
+      select: { userId: true, desiredLocation: true },
+    })
+  }
 
   if (!profile) {
     return NextResponse.json({ error: "No profile found" }, { status: 404, headers: corsHeaders() })

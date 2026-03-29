@@ -80,7 +80,7 @@
     bgFetch(`${appUrl}/api/extension`, "POST", {
       "Content-Type": "application/json",
       "X-Extension-Secret": secret,
-    }, result).catch(() => {})
+    }, { ...result, userId: profile?.userId }).catch(() => {})
   }
 
   // ── Form field matching ────────────────────────────────────────────────────
