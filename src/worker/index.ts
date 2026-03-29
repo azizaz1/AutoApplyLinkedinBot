@@ -78,7 +78,7 @@ const scrapeWorker = new Worker<ScrapeJobData>(
     console.log(`[scrape] done — ${rawJobs.length} jobs found, ${applied} queued for apply`)
     return { jobsFound: rawJobs.length, queued: applied }
   },
-  { connection: redis, concurrency: 2 }
+  { connection: { url: process.env.REDIS_URL || "redis://localhost:6379" } as any, concurrency: 2 }
 )
 
 // ─── Apply Worker ─────────────────────────────────────────────────────────────
