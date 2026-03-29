@@ -1,4 +1,4 @@
-import { Queue, Worker, Job } from "bullmq"
+import { Queue } from "bullmq"
 import IORedis from "ioredis"
 
 // ─── Redis connection ─────────────────────────────────────────────────────────
@@ -7,12 +7,14 @@ export const redis = new IORedis(process.env.REDIS_URL || "redis://localhost:637
   maxRetriesPerRequest: null,
 })
 
-const redisUrl = process.env.REDIS_URL || "redis://localhost:6379"
-
 // ─── Queue definitions ────────────────────────────────────────────────────────
 
-export const scrapeQueue = new Queue("scrape-jobs", { connection: { url: redisUrl } })
-export const applyQueue  = new Queue("apply-jobs",  { connection: { url: redisUrl } })
+const connection = { url: process.env.REDIS_URL || "redis://localhost:6379" }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const scrapeQueue = new Queue("scrape-jobs", { connection: connection as any })
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const applyQueue  = new Queue("apply-jobs",  { connection: connection as any })
 
 // ─── Job data types ───────────────────────────────────────────────────────────
 
