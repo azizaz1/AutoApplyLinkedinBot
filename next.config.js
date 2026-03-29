@@ -3,7 +3,7 @@ const nextConfig = {
   experimental: {
     serverActions: { allowedOrigins: ["localhost:3000"] },
     instrumentationHook: true,
-    serverComponentsExternalPackages: ["playwright", "playwright-core", "jose", "@auth/core"],
+    serverComponentsExternalPackages: ["playwright", "playwright-core", "jose", "@auth/core", "nodemailer"],
   },
   webpack: (config, { isServer, nextRuntime }) => {
     // Only apply Node.js externals for Node.js server — NOT for Edge (middleware)
