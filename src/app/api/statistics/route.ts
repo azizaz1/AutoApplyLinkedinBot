@@ -114,3 +114,5 @@ export async function GET() {
     recentActivity,
   })
 }
+
+export const runtime = "nodejs"

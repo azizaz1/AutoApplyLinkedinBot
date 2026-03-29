@@ -14,3 +14,5 @@ export async function GET() {
 
   return NextResponse.json(runs)
 }
+
+export const runtime = "nodejs"

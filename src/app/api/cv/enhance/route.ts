@@ -12,3 +12,5 @@ export async function POST(req: NextRequest) {
   const enhanced = await enhanceCVSection(section, text, context)
   return NextResponse.json({ enhanced })
 }
+
+export const runtime = "nodejs"

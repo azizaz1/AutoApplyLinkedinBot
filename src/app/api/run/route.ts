@@ -289,3 +289,5 @@ export async function DELETE() {
   stopRequests.set(session.user.id, true)
   return NextResponse.json({ success: true })
 }
+
+export const runtime = "nodejs"

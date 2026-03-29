@@ -44,3 +44,5 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ error: "Invalid mode" }, { status: 400 })
 }
+
+export const runtime = "nodejs"

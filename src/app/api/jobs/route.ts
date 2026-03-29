@@ -61,3 +61,5 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ success: true, message: "Run started", queries })
 }
+
+export const runtime = "nodejs"

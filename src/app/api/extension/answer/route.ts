@@ -57,3 +57,5 @@ Reply with ONLY the answer value, no explanation. Be concise (1-5 words or a num
 
   return Response.json({ answer }, { headers: corsHeaders() })
 }
+
+export const runtime = "nodejs"

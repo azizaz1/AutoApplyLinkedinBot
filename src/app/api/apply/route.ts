@@ -79,3 +79,5 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ success: true, application })
 }
+
+export const runtime = "nodejs"

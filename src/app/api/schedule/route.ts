@@ -30,3 +30,5 @@ export async function PUT(req: NextRequest) {
 
   return NextResponse.json(schedule)
 }
+
+export const runtime = "nodejs"
