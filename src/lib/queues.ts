@@ -7,10 +7,12 @@ export const redis = new IORedis(process.env.REDIS_URL || "redis://localhost:637
   maxRetriesPerRequest: null,
 })
 
+const redisUrl = process.env.REDIS_URL || "redis://localhost:6379"
+
 // ─── Queue definitions ────────────────────────────────────────────────────────
 
-export const scrapeQueue = new Queue("scrape-jobs", { connection: redis })
-export const applyQueue  = new Queue("apply-jobs",  { connection: redis })
+export const scrapeQueue = new Queue("scrape-jobs", { connection: { url: redisUrl } })
+export const applyQueue  = new Queue("apply-jobs",  { connection: { url: redisUrl } })
 
 // ─── Job data types ───────────────────────────────────────────────────────────
 
