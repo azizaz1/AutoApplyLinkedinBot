@@ -33,9 +33,8 @@ export async function OPTIONS() {
 export async function GET(req: NextRequest) {
   if (!checkSecret(req)) return unauthorized()
 
-  // Find the user whose secret matches (single-user setup: just get first profile with CV)
+  // Find the user whose secret matches (single-user setup: get first profile)
   const profile = await prisma.profile.findFirst({
-    where: { cvFileUrl: { not: null } },
     select: {
       fullName: true,
       currentTitle: true,
@@ -67,7 +66,6 @@ export async function POST(req: NextRequest) {
 
   // Find the user (single-user: same as GET)
   const profile = await prisma.profile.findFirst({
-    where: { cvFileUrl: { not: null } },
     select: { userId: true, desiredLocation: true },
   })
 
