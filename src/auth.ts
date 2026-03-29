@@ -1,26 +1,16 @@
 import NextAuth from "next-auth"
 import { PrismaAdapter } from "@auth/prisma-adapter"
-import Google from "next-auth/providers/google"
-import GitHub from "next-auth/providers/github"
 import Credentials from "next-auth/providers/credentials"
 import { prisma } from "@/lib/prisma"
+import { authConfig } from "@/auth.config"
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  ...authConfig,
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
-  pages: {
-    signIn: "/login",
-  },
   providers: [
-    Google({
-      clientId: process.env.AUTH_GOOGLE_ID!,
-      clientSecret: process.env.AUTH_GOOGLE_SECRET!,
-    }),
-    GitHub({
-      clientId: process.env.AUTH_GITHUB_ID!,
-      clientSecret: process.env.AUTH_GITHUB_SECRET!,
-    }),
-    // Email/password credentials (for simple email login)
+    ...authConfig.providers,
+    // Override Credentials with full authorize logic (needs Prisma)
     Credentials({
       name: "credentials",
       credentials: {
@@ -28,8 +18,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        // In production: hash passwords with bcrypt
-        // For now: create user if not exists (demo mode)
         if (!credentials?.email) return null
         let user = await prisma.user.findUnique({
           where: { email: credentials.email as string },
