@@ -9,8 +9,10 @@ export function middleware(req: NextRequest) {
   const isPublic = PUBLIC_PREFIXES.some(p => pathname.startsWith(p))
   if (isPublic) return NextResponse.next()
 
-  // NextAuth v5 uses these cookie names
+  // NextAuth v5 changed cookie prefix from "next-auth" to "authjs"
   const hasSession =
+    req.cookies.has("authjs.session-token") ||
+    req.cookies.has("__Secure-authjs.session-token") ||
     req.cookies.has("next-auth.session-token") ||
     req.cookies.has("__Secure-next-auth.session-token")
 
