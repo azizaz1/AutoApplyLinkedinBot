@@ -5,8 +5,9 @@ const nextConfig = {
     instrumentationHook: true,
     serverComponentsExternalPackages: ["playwright", "playwright-core", "jose", "@auth/core"],
   },
-  webpack: (config, { isServer }) => {
-    if (isServer) {
+  webpack: (config, { isServer, nextRuntime }) => {
+    // Only apply Node.js externals for Node.js server — NOT for Edge (middleware)
+    if (isServer && nextRuntime !== "edge") {
       const existing = Array.isArray(config.externals) ? config.externals : [config.externals].filter(Boolean)
       config.externals = [
         ...existing,
