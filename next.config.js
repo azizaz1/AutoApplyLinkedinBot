@@ -3,7 +3,7 @@ const nextConfig = {
   experimental: {
     serverActions: { allowedOrigins: ["localhost:3000"] },
     instrumentationHook: true,
-    serverComponentsExternalPackages: ["playwright", "playwright-core"],
+    serverComponentsExternalPackages: ["playwright", "playwright-core", "jose", "@auth/core"],
   },
   webpack: (config, { isServer }) => {
     if (isServer) {
