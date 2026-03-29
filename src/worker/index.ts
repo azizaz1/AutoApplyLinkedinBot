@@ -6,7 +6,7 @@
  */
 
 import { Worker } from "bullmq"
-import { redis, ScrapeJobData, ApplyJobData } from "../lib/queues"
+import { ScrapeJobData, ApplyJobData } from "../lib/queues"
 import { prisma } from "../lib/prisma"
 import { scoreJobMatch } from "../lib/claude"
 import { decrypt } from "../lib/crypto"
@@ -115,7 +115,8 @@ const applyWorker = new Worker<ApplyJobData>(
       throw err
     }
   },
-  { connection: redis, concurrency: 1 } // apply one at a time to avoid bot detection
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  { connection: { url: process.env.REDIS_URL || "redis://localhost:6379" } as any, concurrency: 1 }
 )
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
